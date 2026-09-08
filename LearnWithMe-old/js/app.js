@@ -1798,7 +1798,8 @@ function handlePdfUpload(file) {
       currentPdfData.pageTexts = pageTexts;
 
       const totalLessons = units.reduce((s, u) => s + u.lessons.length, 0);
-      document.getElementById('pdfStatus').textContent = `提取完成！识别到 ${units.length} 个单元、${totalLessons} 篇课文`;
+      const methodLabel = serverResult ? serverResult.method : (hadOutline ? '书签' : '前端提取');
+      document.getElementById('pdfStatus').textContent = `提取完成！识别到 ${units.length} 个单元、${totalLessons} 篇课文（${methodLabel}）`;
       document.getElementById('pdfProgressFill').style.width = '100%';
 
       if (chapters.length > 0) {
@@ -2405,7 +2406,9 @@ async function extractTocFromServer(arrayBuffer) {
     }
     if (data.units && data.units.length > 0) {
       console.log('[服务端提取] ✅ 成功:', data.units.length, '个单元, 方法=', data.method,
-        data.bodyFont ? '正文字号=' + data.bodyFont : '', '偏移=' + data.pageOffset);
+        data.bodyFont ? '正文字号=' + data.bodyFont : '',
+        '检测偏移=' + (data.detectedOffset || 0),
+        'pageOffset=' + data.pageOffset);
       return data;
     }
     console.warn('[服务端提取] 服务端未提取到目录');
@@ -2689,6 +2692,14 @@ async function addBookmarksToPdf(arrayBuffer, units) {
       return arrayBuffer;
     }
     const pdfDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+    const totalPages = pdfDoc.getPageCount();
+
+    // 页码钳制（参考用户 Python 程序：pg = max(1, min(pg, max_p))）
+    // startPage 是 1-based PDF 页码，转为 0-based index 后钳制到 [0, totalPages-1]
+    const clampIdx = (startPage) => {
+      const idx = Math.max(0, (startPage || 1) - 1);
+      return Math.min(idx, totalPages - 1);
+    };
 
     // 构建 pdf-lib 的 outline 结构（三级：group → lesson → sublesson）
     const buildOutline = (lessons) => {
@@ -2699,7 +2710,7 @@ async function addBookmarksToPdf(arrayBuffer, units) {
         // 子篇目书签构造（lesson 自己的 children）
         const subChildrenOf = (lesson) => (lesson.children || []).map(sub => ({
           title: sub.title,
-          pageIndex: Math.max(0, (sub.startPage || 1) - 1),
+          pageIndex: clampIdx(sub.startPage),
           children: [],
         }));
         if (l.type === 'group') {
@@ -2710,7 +2721,7 @@ async function addBookmarksToPdf(arrayBuffer, units) {
             const lesson = lessons[i];
             children.push({
               title: lesson.title,
-              pageIndex: Math.max(0, (lesson.startPage || 1) - 1),
+              pageIndex: clampIdx(lesson.startPage),
               children: subChildrenOf(lesson),
             });
             i++;
@@ -2724,7 +2735,7 @@ async function addBookmarksToPdf(arrayBuffer, units) {
         } else {
           items.push({
             title: l.title,
-            pageIndex: Math.max(0, (l.startPage || 1) - 1),
+            pageIndex: clampIdx(l.startPage),
             children: subChildrenOf(l),
           });
           i++;

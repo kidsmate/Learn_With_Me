@@ -18,6 +18,10 @@ LESSON_NUM_RE = re.compile(r'^\d+\*?\s*[.．、]?\s*\S')
 # 版权/编目页关键词
 SKIP_KEYWORDS = ['版权所有', '著作权所有', 'ISBN', 'CIP', '图书在版编目', '出版发行']
 
+# 印刷页码检测：教材每页底部通常有印刷页码（如 "2"、"14"）
+# offset = PDF 真实页码 - 印刷页码，例如印刷页2在PDF第9页 → offset=7
+PAGE_NUM_RE = re.compile(r'^[\s\-—]*(\d{1,3})[\s\-—]*$')
+
 # ===== 学科自适应：不同学科的单元/课文识别规则 =====
 # 每种学科一套 (unit_re, lesson_re, group_kws, name)
 # 注意：subject key 与前端 js/data.js 中的 subject.id 保持一致
@@ -300,6 +304,117 @@ def _compute_endpages_v2(units, total_pages):
     return units
 
 
+def _detect_page_offset(page_num_lines, total_pages):
+    """自动检测页码偏移量（参考用户 Python 程序的 offset 逻辑）。
+
+    教材每页底部通常印有课本页码（如 2、6、14），但 PDF 第 1 页往往是封面，
+    导致 PDF 真实页码 = 课本印刷页码 + offset。
+    本函数扫描所有页面的纯页码行，统计 (PDF页码 - 印刷页码) 的众数作为偏移。
+
+    例如：印刷页 2 出现在 PDF 第 9 页 → offset = 9 - 2 = 7
+    """
+    offset_count = {}
+    for p, nums in page_num_lines.items():
+        for item in nums:
+            text = item['text'].strip()
+            m = PAGE_NUM_RE.match(text)
+            if not m:
+                continue
+            printed = int(m.group(1))
+            # 印刷页码应在合理范围（1 ~ 总页数），且 PDF 页码应大于印刷页码
+            if 1 <= printed <= total_pages and p > printed:
+                offset = p - printed
+                offset_count[offset] = offset_count.get(offset, 0) + 1
+    if not offset_count:
+        return 0
+    # 取出现次数最多的偏移量（众数）
+    best_offset = max(offset_count.items(), key=lambda x: x[1])
+    # 至少需要 2 个页面命中才认为偏移可靠
+    if best_offset[1] < 2:
+        return 0
+    print(f"[API] 页码偏移检测: {best_offset[0]} (命中 {best_offset[1]} 页)")
+    return best_offset[0]
+
+
+def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
+    """从目录页解析三级目录（最可靠的方式）。
+
+    目录页通常列出 "第X单元"、"1 春 ........ 2"、"写作 ... 17" 等条目，
+    后面的数字是课本印刷页码。本函数解析这些条目，加上 offset 得到 PDF 真实页码。
+
+    返回 units 结构，或 None（目录页无法解析）。
+    """
+    # 收集目录页所有行
+    toc_lines = []
+    for p in sorted(toc_pages):
+        for line in sorted(page_lines.get(p, []), key=lambda l: -l['y']):
+            toc_lines.append(line['text'].strip())
+
+    units = []
+    cur_unit = None
+    cur_l2 = None
+
+    # 目录页常见的页码分隔符：连续点号、空格、制表符
+    # 条目格式："1 春 / 朱自清 ........ 2" 或 "1 春  2" 或 "第一单元  1"
+    entry_re = re.compile(r'^(.+?)[\s\.·…\-—]+(\d{1,3})\s*$')
+
+    for raw in toc_lines:
+        text = raw.strip()
+        if not text or len(text) > 60:
+            continue
+
+        # 单元标题（无页码或页码在末尾）
+        if _is_unit_title(text, rules):
+            # 尝试提取页码
+            m = entry_re.match(text)
+            page = 1
+            title = text
+            if m:
+                title = m.group(1).strip()
+                page = int(m.group(2)) + offset
+            cur_unit = {'title': title, 'page': max(1, min(page, total_pages)), 'lessons': []}
+            units.append(cur_unit)
+            cur_l2 = None
+            continue
+
+        # 课文/栏目条目：必须匹配 "标题 ... 页码" 格式
+        m = entry_re.match(text)
+        if not m:
+            continue
+
+        title = m.group(1).strip()
+        book_page = int(m.group(2))
+        page = max(1, min(book_page + offset, total_pages))
+
+        # 判断是栏目还是课文
+        is_group = any(kw in title for kw in rules['group_kws'])
+        if cur_unit is None:
+            cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
+            units.append(cur_unit)
+
+        if is_group:
+            cur_l2 = None
+            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': page})
+        else:
+            # 课文标题可能带编号 "1 春 / 朱自清"，也可能是子篇目 "观沧海 / 曹操"
+            if rules['lesson_re'].match(title):
+                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+                cur_unit['lessons'].append(cur_l2)
+            else:
+                # 无编号的短标题 → 子篇目（L3），挂到最近的 L2 下
+                if cur_l2 is not None:
+                    cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': page})
+                else:
+                    cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+                    cur_unit['lessons'].append(cur_l2)
+
+    # 过滤掉没有课文的单元
+    units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
+    if units:
+        _compute_endpages_v2(units, total_pages)
+    return units if units else None
+
+
 def extract_toc_with_fitz(pdf_bytes):
     """用 pymupdf 提取三级目录（参考用户 Python 书签程序的层级规则）。
 
@@ -320,6 +435,7 @@ def extract_toc_with_fitz(pdf_bytes):
     page_lines = {}      # page -> [lines]
     text_pages = {}      # text -> set of pages（页眉页脚检测）
     font_count = {}
+    page_num_lines = {}  # page -> [纯页码行]，用于偏移量检测
 
     for page_idx in range(total_pages):
         page = doc[page_idx]
@@ -341,10 +457,13 @@ def extract_toc_with_fitz(pdf_bytes):
                         line_max_font = fs
                     line_y = float(span["bbox"][1])
                 line_text = line_text.strip()
-                if len(line_text) < 2 or len(line_text) > 60:
+                if not line_text or len(line_text) > 60:
                     continue
-                # 过滤纯页码行
-                if re.fullmatch(r'[\-—\s]*\d{1,4}[\-—\s]*', line_text):
+                # 收集纯页码行（用于偏移量检测）
+                if PAGE_NUM_RE.match(line_text):
+                    page_num_lines.setdefault(page_idx + 1, []).append({
+                        'text': line_text, 'y': round(line_y, 1)
+                    })
                     continue
                 lines.append({
                     'page': page_idx + 1,
@@ -377,8 +496,35 @@ def extract_toc_with_fitz(pdf_bytes):
     if not font_count:
         return {'units': [], 'pageOffset': 0, 'totalPages': total_pages, 'method': 'none'}
 
-    # 跳过页检测
+    # ★ 步骤 1：自动检测页码偏移量（参考用户 Python 程序的 offset 逻辑）
+    # offset = PDF 真实页码 - 课本印刷页码
+    page_offset = _detect_page_offset(page_num_lines, total_pages)
+
+    # 跳过页检测（含目录页、版权页）
     skip_pages = _detect_skip_pages(page_lines, rules)
+
+    # ★ 步骤 2：优先解析目录页（最可靠，目录页有印刷页码 + offset = PDF 真实页码）
+    toc_pages = set()
+    for p in skip_pages:
+        text_all = "\n".join(l['text'] for l in page_lines.get(p, []))
+        # 目录页特征：含"目录"标题且有多个带页码的条目
+        if '目录' in text_all or '目錄' in text_all or 'Contents' in text_all:
+            toc_pages.add(p)
+
+    if toc_pages:
+        toc_units = _parse_toc_page(page_lines, toc_pages, rules, page_offset, total_pages)
+        if toc_units:
+            print(f"[API] ✅ 目录页解析成功: {len(toc_units)} 个单元, offset={page_offset}")
+            return {
+                'units': toc_units,
+                'pageOffset': 0,    # 目录页页码已加 offset 转为真实 PDF 页，前端无需再加
+                'totalPages': total_pages,
+                'method': 'toc_page',
+                'subject': subject_key,
+                'subjectName': rules['name'],
+                'detectedOffset': page_offset,
+            }
+        print(f"[API] 目录页解析失败，回退到正文扫描")
 
     # 正文字号 = 出现次数最多的字号
     body_font = float(max(font_count.items(), key=lambda x: x[1])[0])
@@ -549,7 +695,7 @@ def extract_toc_with_fitz(pdf_bytes):
 
     return {
         'units': units,
-        'pageOffset': 0,    # pymupdf 页码即真实 PDF 页码，无需偏移
+        'pageOffset': 0,    # 正文扫描得到的是真实 PDF 页码，前端无需偏移
         'totalPages': total_pages,
         'method': 'fontsize' if not use_body_skeleton else 'body_regex',
         'subject': subject_key,
@@ -557,7 +703,8 @@ def extract_toc_with_fitz(pdf_bytes):
         'bodyFont': body_font,
         'titleCount': len(title_lines),
         'bodyUnitsFound': len(body_units),
-        'bodyLessonsFound': len(body_lessons)
+        'bodyLessonsFound': len(body_lessons),
+        'detectedOffset': page_offset,
     }
 
 
@@ -577,6 +724,8 @@ def parse_existing_toc(toc_list, total_pages, rules):
         level, title, page = entry[0], entry[1].strip(), entry[2]
         if not title or page < 1:
             continue
+        # 页码钳制（参考用户 Python 程序：pg = max(1, min(pg, max_p))）
+        page = max(1, min(page, total_pages))
 
         if level == 1:
             cur_unit = {'title': title, 'page': page, 'lessons': []}
