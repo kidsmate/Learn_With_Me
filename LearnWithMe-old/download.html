@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>下载 - 安冉的学习助手</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .card {
+    background: #fff;
+    border-radius: 20px;
+    padding: 40px 30px;
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+  }
+  h1 { font-size: 22px; color: #333; margin-bottom: 10px; }
+  p { color: #666; font-size: 14px; line-height: 1.6; margin-bottom: 25px; }
+  .btn {
+    display: inline-block;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #fff;
+    padding: 16px 40px;
+    border-radius: 50px;
+    text-decoration: none;
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: transform 0.2s, box-shadow 0.2s;
+    box-shadow: 0 4px 15px rgba(102,126,234,0.4);
+  }
+  .btn:hover { transform: translateY(-2px); }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+  .size { color: #999; font-size: 13px; margin-top: 15px; }
+  .status { margin-top: 20px; padding: 12px; border-radius: 10px; font-size: 14px; display: none; }
+  .status.loading { background: #e3f2fd; color: #1565c0; display: block; }
+  .status.error { background: #ffebee; color: #c62828; display: block; }
+  .status.success { background: #e8f5e9; color: #2e7d32; display: block; }
+  .alt { margin-top: 20px; padding: 15px; background: #fff8e1; border-radius: 12px; font-size: 13px; color: #f57c00; text-align: left; line-height: 1.7; }
+  .alt code { background: #fff; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>📦 安冉的学习助手</h1>
+    <p>点击下方按钮下载完整项目压缩包</p>
+    <button id="dlBtn" class="btn" onclick="downloadZip()">⬇️ 下载 ZIP</button>
+    <div class="size">文件大小：约 130 KB</div>
+    <div id="status" class="status"></div>
+    <div class="alt">
+      <strong>💡 如果下载按钮没反应：</strong><br>
+      请长按下方链接，选择"下载链接文件"或"存储到文件"：<br>
+      <a href="anran-learning.zip" style="color:#1565c0;word-break:break-all;">anran-learning.zip</a>
+    </div>
+  </div>
+
+<script>
+async function downloadZip() {
+  const btn = document.getElementById('dlBtn');
+  const status = document.getElementById('status');
+  btn.disabled = true;
+  status.className = 'status loading';
+  status.textContent = '正在准备下载...';
+
+  try {
+    const resp = await fetch('anran-learning.zip');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'anran-learning.zip';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    status.className = 'status success';
+    status.textContent = '✅ 下载已开始！如果没有反应，请尝试长按上方链接。';
+  } catch (e) {
+    status.className = 'status error';
+    status.textContent = '❌ 下载失败：' + e.message + '。请尝试长按上方链接下载。';
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>

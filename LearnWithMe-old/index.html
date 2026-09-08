@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="安冉的学习助手">
+  <meta name="theme-color" content="#6C5CE7">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <title>安冉的学习助手</title>
+  <link rel="stylesheet" href="css/style.css?v=20260909">
+  <!-- PDF.js for textbook PDF processing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- pdf-lib for adding bookmarks to PDFs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Top Status Bar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="app-logo">🌱</div>
+        <div class="app-title">安冉的学习助手</div>
+      </div>
+      <div class="topbar-right">
+        <div class="points-badge" id="pointsBadge" title="当前积分">
+          <span class="coin-icon">🪙</span>
+          <span id="pointsValue">0</span>
+        </div>
+        <div class="streak-badge" id="streakBadge" title="连续打卡天数">
+          <span>🔥</span>
+          <span id="streakValue">0</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="content">
+      <!-- ===== Dashboard Page ===== -->
+      <section class="page active" id="page-dashboard">
+        <div class="page-header">
+          <h1>今日学习</h1>
+          <div class="date-text" id="todayDate"></div>
+        </div>
+
+        <!-- Greeting & daily quote -->
+        <div class="greeting-card">
+          <div class="greeting-avatar">🎓</div>
+          <div class="greeting-text">
+            <div class="greeting-title" id="greetingTitle">早上好，安冉！</div>
+            <div class="greeting-sub" id="dailyQuote">今天也要加油哦～</div>
+          </div>
+          <button class="btn-checkin" id="btnDailyCheckin">每日打卡</button>
+        </div>
+
+        <!-- Today's tasks -->
+        <div class="section-title">今日任务</div>
+        <div class="tasks-grid" id="todayTasks"></div>
+
+        <!-- Stats row -->
+        <div class="stats-row">
+          <div class="stat-card">
+            <div class="stat-num" id="statLearned">0</div>
+            <div class="stat-label">已学知识点</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="statMastered">0</div>
+            <div class="stat-label">已掌握</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="statThisWeek">0</div>
+            <div class="stat-label">本周打卡</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num" id="statDays">0</div>
+            <div class="stat-label">累计天数</div>
+          </div>
+        </div>
+
+        <!-- Calendar -->
+        <div class="section-title">学习日历</div>
+        <div class="calendar-card">
+          <div class="calendar-header">
+            <button class="cal-nav" id="calPrev">‹</button>
+            <div class="cal-title" id="calTitle"></div>
+            <button class="cal-nav" id="calNext">›</button>
+          </div>
+          <div class="calendar-weekdays">
+            <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
+          </div>
+          <div class="calendar-grid" id="calendarGrid"></div>
+        </div>
+      </section>
+
+      <!-- ===== Subjects Page ===== -->
+      <section class="page" id="page-subjects">
+        <div class="page-header">
+          <h1>学科学习</h1>
+          <div class="page-sub">人教版 · 初中</div>
+        </div>
+        <div class="subjects-grid" id="subjectsGrid"></div>
+      </section>
+
+      <!-- ===== Subject Detail Page ===== -->
+      <section class="page" id="page-subject-detail">
+        <div class="page-header">
+          <button class="back-btn" onclick="navigate('subjects')">‹ 返回</button>
+          <h1 id="subjectDetailTitle"></h1>
+        </div>
+        <div class="subject-progress">
+          <div class="progress-bar"><div class="progress-fill" id="subjectProgressFill"></div></div>
+          <div class="progress-text" id="subjectProgressText">0 / 0</div>
+        </div>
+        <div class="knowledge-list" id="knowledgeList"></div>
+      </section>
+
+      <!-- ===== Learning Detail Page ===== -->
+      <section class="page" id="page-learn">
+        <div class="page-header">
+          <button class="back-btn" onclick="navigate('subject-detail')">‹ 返回</button>
+          <h1 id="learnTitle">知识点学习</h1>
+        </div>
+        <div class="learn-subject-tag" id="learnSubjectTag"></div>
+
+        <!-- Section Tabs -->
+        <div class="learn-tabs" id="learnTabs">
+          <button class="learn-tab active" data-section="summary">📝 知识总结</button>
+          <button class="learn-tab" data-section="keypoints">🔑 核心要点</button>
+          <button class="learn-tab" data-section="textbook">📖 教材内容</button>
+          <button class="learn-tab" data-section="video">🎬 教学视频</button>
+          <button class="learn-tab" data-section="exercise">✏️ 习题练习</button>
+        </div>
+
+        <!-- Section Contents -->
+        <div class="learn-section active" id="learn-section-summary">
+          <div class="learn-card" id="learnSummary"></div>
+        </div>
+
+        <div class="learn-section" id="learn-section-keypoints">
+          <div class="learn-card" id="learnKeyPoints"></div>
+        </div>
+
+        <div class="learn-section" id="learn-section-textbook">
+          <div class="learn-card" id="learnTextbook"></div>
+        </div>
+
+        <div class="learn-section" id="learn-section-video">
+          <div class="learn-card" id="learnVideo"></div>
+        </div>
+
+        <div class="learn-section" id="learn-section-exercise">
+          <div class="learn-card" id="learnExercise"></div>
+        </div>
+
+        <!-- Bottom Action Bar -->
+        <div class="learn-action-bar">
+          <button class="btn-secondary" onclick="navigate('subject-detail')">返回列表</button>
+          <button class="btn-primary" id="learnMarkBtn" onclick="markLearnedFromPage()">标记已学 (+5🪙)</button>
+        </div>
+      </section>
+
+      <!-- ===== Rewards Page ===== -->
+      <section class="page" id="page-rewards">
+        <div class="page-header">
+          <h1>激励中心</h1>
+          <div class="page-sub">努力就会有回报</div>
+        </div>
+
+        <div class="rewards-tabs">
+          <button class="tab-btn active" data-tab="positive">🎉 正向激励</button>
+          <button class="tab-btn" data-tab="negative">⚖️ 负向惩罚</button>
+        </div>
+
+        <div class="tab-content active" id="tab-positive">
+          <div class="section-title">奖励规则</div>
+          <div class="rules-list" id="positiveRules"></div>
+          <div class="section-title">获得记录</div>
+          <div class="records-list" id="rewardRecords"></div>
+        </div>
+
+        <div class="tab-content" id="tab-negative">
+          <div class="section-title">惩罚规则</div>
+          <div class="rules-list" id="negativeRules"></div>
+          <div class="section-title">惩罚记录</div>
+          <div class="records-list" id="punishRecords"></div>
+        </div>
+      </section>
+
+      <!-- ===== Wishlist Page ===== -->
+      <section class="page" id="page-wishlist">
+        <div class="page-header">
+          <h1>心愿清单</h1>
+          <button class="btn-add" id="btnAddWish">+ 添加心愿</button>
+        </div>
+        <div class="wish-summary">
+          <div class="wish-points">可用积分：<span id="wishPoints">0</span> 🪙</div>
+        </div>
+        <div class="wishlist-grid" id="wishlistGrid"></div>
+      </section>
+
+      <!-- ===== Textbooks Page ===== -->
+      <section class="page" id="page-textbooks">
+        <div class="page-header">
+          <h1>教材管理</h1>
+          <div class="page-sub">上传人教版教材 PDF，自动整理知识点</div>
+        </div>
+
+        <div class="upload-zone" id="uploadZone">
+          <div class="upload-icon">📚</div>
+          <div class="upload-text">点击或拖拽上传教材 PDF</div>
+          <div class="upload-hint">支持人教版初中各科教材</div>
+          <input type="file" id="pdfInput" accept="application/pdf" hidden>
+          <button class="btn-primary" onclick="document.getElementById('pdfInput').click()">选择文件</button>
+        </div>
+
+        <div class="section-title">我的教材</div>
+        <div class="textbooks-list" id="textbooksList"></div>
+
+        <div class="ocr-note">
+          <p>💡 提示：对于扫描版 PDF，可使用 OCR 识别。当前 demo 支持文本型 PDF 自动提取章节知识点。</p>
+        </div>
+      </section>
+
+      <!-- ===== Settings Page ===== -->
+      <section class="page" id="page-settings">
+        <div class="page-header">
+          <h1>设置</h1>
+        </div>
+        <div class="settings-list">
+          <div class="setting-item">
+            <div class="setting-info">
+              <div class="setting-name">孩子昵称</div>
+              <div class="setting-desc">显示在首页的称呼</div>
+            </div>
+            <input type="text" class="setting-input" id="settingNickname" placeholder="安冉">
+          </div>
+          <div class="setting-item">
+            <div class="setting-info">
+              <div class="setting-name">每日目标</div>
+              <div class="setting-desc">每天学习的知识点数量</div>
+            </div>
+            <input type="number" class="setting-input" id="settingDailyGoal" min="1" max="20" value="3">
+          </div>
+          <div class="setting-item">
+            <div class="setting-info">
+              <div class="setting-name">重置数据</div>
+              <div class="setting-desc">清空所有学习记录与积分</div>
+            </div>
+            <button class="btn-danger" id="btnReset">重置</button>
+          </div>
+          <div class="setting-item">
+            <div class="setting-info">
+              <div class="setting-name">导出数据</div>
+              <div class="setting-desc">导出学习记录为 JSON</div>
+            </div>
+            <button class="btn-secondary" id="btnExport">导出</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Tab Bar -->
+    <nav class="tabbar">
+      <button class="tab-item active" data-page="dashboard">
+        <div class="tab-icon">🏠</div>
+        <div class="tab-label">首页</div>
+      </button>
+      <button class="tab-item" data-page="subjects">
+        <div class="tab-icon">📖</div>
+        <div class="tab-label">学科</div>
+      </button>
+      <button class="tab-item" data-page="rewards">
+        <div class="tab-icon">🎁</div>
+        <div class="tab-label">激励</div>
+      </button>
+      <button class="tab-item" data-page="wishlist">
+        <div class="tab-icon">🌟</div>
+        <div class="tab-label">心愿</div>
+      </button>
+      <button class="tab-item" data-page="textbooks">
+        <div class="tab-icon">📚</div>
+        <div class="tab-label">教材</div>
+      </button>
+      <button class="tab-item" data-page="settings">
+        <div class="tab-icon">⚙️</div>
+        <div class="tab-label">设置</div>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Knowledge Point Modal -->
+  <div class="modal" id="knowledgeModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="kpTitle">知识点</h3>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body" id="kpBody"></div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeModal()">稍后再学</button>
+        <button class="btn-primary" id="btnMarkLearned">标记已学 (+5🪙)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wish Modal -->
+  <div class="modal" id="wishModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>添加心愿</h3>
+        <button class="modal-close" onclick="closeWishModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">心愿名称</label>
+        <input type="text" class="form-input" id="wishName" placeholder="例如：乐高积木">
+        <label class="form-label">所需积分</label>
+        <input type="number" class="form-input" id="wishCost" min="1" placeholder="例如：100">
+        <label class="form-label">图标（选一个表情）</label>
+        <div class="emoji-picker" id="emojiPicker">
+          <span>🎮</span><span>📚</span><span>🎨</span><span>⚽</span><span>🍦</span>
+          <span>🚗</span><span>🎒</span><span>🎵</span><span>🧸</span><span>🏆</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeWishModal()">取消</button>
+        <button class="btn-primary" onclick="saveWish()">保存心愿</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PDF Processing Modal -->
+  <div class="modal" id="pdfModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>教材处理中</h3>
+      </div>
+      <div class="modal-body">
+        <div class="pdf-progress">
+          <div class="pdf-icon">📄</div>
+          <div class="pdf-status" id="pdfStatus">正在读取 PDF...</div>
+          <div class="progress-bar"><div class="progress-fill" id="pdfProgressFill" style="width:0%"></div></div>
+        </div>
+        <div class="pdf-extracted" id="pdfExtracted" hidden>
+          <div class="section-title">提取的章节</div>
+          <div id="pdfChapters"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" id="btnPdfCancel" onclick="closePdfModal()">取消</button>
+        <button class="btn-primary" id="btnPdfSave" onclick="saveTextbook()" disabled>保存到教材</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 确认弹窗（移动端友好） -->
+  <div class="modal" id="confirmModal">
+    <div class="modal-content" style="max-width:320px;">
+      <div class="modal-body" style="padding:24px 20px; text-align:center;">
+        <div id="confirmMsg" style="font-size:15px; color:var(--text); line-height:1.6; margin-bottom:20px;">确定要执行此操作吗？</div>
+        <div style="display:flex; gap:12px;">
+          <button class="btn-secondary" style="flex:1; padding:12px;" id="confirmCancel">取消</button>
+          <button class="btn-primary" style="flex:1; padding:12px; background:#e74c3c;" id="confirmOk">确定</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="js/data.js?v=20260909"></script>
+  <script src="js/learning.js?v=20260909"></script>
+  <script src="js/storage.js?v=20260909"></script>
+  <script src="js/app.js?v=20260909"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js?v=20260909').then(reg => {
+        // 检查是否有新版本的 Service Worker
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              // 有新版本，立即激活并刷新
+              newWorker.postMessage({ action: 'skipWaiting' });
+              location.reload();
+            }
+          });
+        });
+        // 每次加载都检查更新
+        reg.update();
+      }).catch(() => {});
+    }
+  </script>
+</body>
+</html>
