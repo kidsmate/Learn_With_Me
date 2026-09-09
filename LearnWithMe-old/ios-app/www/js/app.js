@@ -3076,11 +3076,24 @@ async function extractTocFromTocPages(pdf, totalPages) {
     pageLines[i] = lines;
   }
 
-  // 定位目录页（从第4页开始，最多4页目录，第4~7页）
-  // 用户描述：目录页可能 1~4 页，需动态判断结束位置
+  // ★ 诊断：打印前 10 页文本概要，帮助定位"什么也没解析出来"的原因
+  const diagEnd = Math.min(10, totalPages);
+  for (let i = 1; i <= diagEnd; i++) {
+    const lines = pageLines[i] || [];
+    const textAll = lines.map(l => l.text).join(' ');
+    const preview = textAll.slice(0, 80).replace(/\n/g, '\\n');
+    console.log(`[诊断] 第${i}页: ${lines.length}行, ${textAll.length}字符, 前80字: "${preview}"`);
+    lines.slice(0, 15).forEach((l, j) => {
+      console.log(`  L${j}: "${l.text.slice(0, 60)}"`);
+    });
+    const hasTocTitle = ['目录', '目錄', 'Contents', 'CONTENTS'].some(kw => textAll.replace(/\s+/g, '').includes(kw));
+    if (hasTocTitle) console.log(`  ★★★ 检测到目录标题！`);
+  }
+
+  // 定位目录页（放宽范围：第3~10页，最多6页目录）
   const tocPages = [];
-  const startPage = 4;
-  const endPage = Math.min(7, totalPages);
+  const startPage = 3;
+  const endPage = Math.min(10, totalPages);
   for (let p = startPage; p <= endPage; p++) {
     const lines = pageLines[p] || [];
     const textAll = lines.map(l => l.text).join('\n');
@@ -3090,25 +3103,31 @@ async function extractTocFromTocPages(pdf, totalPages) {
     const numberedEntries = lines.filter(l => /\d{1,3}\s*$/.test(l.text)).length;
     const pageRefCount = lines.filter(l => pageRefRe.test(l.text)).length;
     const isToc = tocPages.length === 0
-      ? (hasTocTitle || unitCount >= 1 || numberedEntries >= 4 || pageRefCount >= 2)
+      ? (hasTocTitle || unitCount >= 1 || numberedEntries >= 2 || pageRefCount >= 2)
       : (() => {
           const lessonCount = lines.filter(l => lessonRe.test(l.text)).length;
-          return hasTocTitle || numberedEntries >= 3 || (unitCount >= 1 && lessonCount >= 2)
-                 || pageRefCount >= 2 || unitCount >= 2;
+          return hasTocTitle || numberedEntries >= 2 || (unitCount >= 1 && lessonCount >= 1)
+                 || pageRefCount >= 2 || unitCount >= 1;
         })();
-    console.log(`[目录页提取] 第${p}页: toc=${hasTocTitle}, units=${unitCount}, nums=${numberedEntries}, isToc=${isToc}`);
+    console.log(`[目录页检测] 第${p}页: tocTitle=${hasTocTitle}, units=${unitCount}, nums=${numberedEntries}, isToc=${isToc}`);
     if (isToc) tocPages.push(p);
     else if (tocPages.length > 0) break;
   }
-  // 兜底：从第3页开始
+  // 兜底：扫描第 2-12 页找"目录"关键词
   if (tocPages.length === 0) {
-    for (let p = 3; p <= Math.min(8, totalPages); p++) {
+    console.warn('[目录页提取] 首轮未检测到目录页，扩大搜索范围到 2-12 页...');
+    for (let p = 2; p <= Math.min(12, totalPages); p++) {
       const lines = pageLines[p] || [];
       const textAll = lines.map(l => l.text).join('\n');
-      const hasTocTitle = ['目录', '目錄', 'Contents'].some(kw => textAll.includes(kw));
+      const textNorm = textAll.replace(/\s+/g, '');
+      const hasTocTitle = ['目录', '目錄', 'Contents', 'CONTENTS'].some(kw => textNorm.includes(kw));
       const numberedEntries = lines.filter(l => /\d{1,3}\s*$/.test(l.text)).length;
-      if (hasTocTitle || numberedEntries >= 4) tocPages.push(p);
-      else if (tocPages.length > 0) break;
+      if (hasTocTitle || numberedEntries >= 3) {
+        tocPages.push(p);
+        console.log(`[目录页检测] ★ 兜底找到目录页: 第${p}页`);
+      } else if (tocPages.length > 0) {
+        break;
+      }
     }
   }
 
