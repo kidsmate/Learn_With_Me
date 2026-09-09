@@ -967,6 +967,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             filename = os.path.basename(unquote(self.path))
             self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
             self.send_header('Content-Type', 'application/zip')
+        # HTML 文件不缓存，确保浏览器始终获取最新版本
+        if self.path.endswith('.html') or self.path == '/' or self.path == '/index.html':
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         super().end_headers()
 
     def log_message(self, format, *args):

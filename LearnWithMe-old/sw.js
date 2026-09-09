@@ -1,13 +1,13 @@
 // LearnWithMe - Service Worker (PWA 离线支持)
-const CACHE_NAME = 'anran-learning-v23';
+const CACHE_NAME = 'anran-learning-v24';
 const ASSETS = [
   './',
   './index.html',
-  './css/style.css?v=20260909e',
-  './js/data.js?v=20260909e',
-  './js/learning.js?v=20260909e',
-  './js/storage.js?v=20260909e',
-  './js/app.js?v=20260909e',
+  './css/style.css?v=20260909i',
+  './js/data.js?v=20260909i',
+  './js/learning.js?v=20260909i',
+  './js/storage.js?v=20260909i',
+  './js/app.js?v=20260909i',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -35,8 +35,8 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.startsWith('/api/')) {
     return;
   }
-  // 对 HTML、JS、CSS 文件，优先从网络获取最新版本
-  if (url.pathname.endsWith('.html') || url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
+  // 对 HTML、JS、CSS 文件及根路径，优先从网络获取最新版本
+  if (url.pathname.endsWith('/') || url.pathname.endsWith('.html') || url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
     e.respondWith(
       fetch(e.request).then(res => {
         const clone = res.clone();
