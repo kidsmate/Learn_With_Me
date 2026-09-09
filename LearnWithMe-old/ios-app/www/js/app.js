@@ -1,4 +1,4 @@
-/* ===== 安冉的学习助手 - 主逻辑 ===== */
+/* ===== LearnWithMe - 主逻辑 ===== */
 let state = loadData();
 let currentSubject = null;
 let currentKnowledge = null;
@@ -3602,7 +3602,7 @@ function exportData() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `安冉学习助手数据_${todayStr()}.json`;
+  a.download = `LearnWithMe数据_${todayStr()}.json`;
   a.click();
   URL.revokeObjectURL(url);
   showToast('数据已导出');

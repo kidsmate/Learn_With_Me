@@ -1,6 +1,6 @@
 {
-  "name": "安冉的学习助手",
-  "short_name": "学习助手",
+  "name": "LearnWithMe",
+  "short_name": "LearnWithMe",
   "description": "帮助孩子学习打卡的正向激励助手",
   "start_url": "./index.html",
   "display": "standalone",

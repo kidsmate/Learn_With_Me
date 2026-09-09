@@ -1,6 +1,6 @@
 //
 //  LearnWithMeApp.swift
-//  安冉的学习助手 - iPad 原生壳
+//  LearnWithMe - iPad 原生壳
 //
 //  使用 SwiftUI + WKWebView 包装 Web 应用，便于在 Xcode 中调试。
 //  默认从 App Bundle 加载 www/index.html（完全离线，无需 server.py）。

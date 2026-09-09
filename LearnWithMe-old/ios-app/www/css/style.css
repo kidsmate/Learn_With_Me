@@ -1,4 +1,4 @@
-/* ===== 安冉的学习助手 - 样式 ===== */
+/* ===== LearnWithMe - 样式 ===== */
 :root {
   --primary: #6C5CE7;
   --primary-light: #A29BFE;
@@ -431,8 +431,15 @@ html, body {
 /* ===== Subjects Grid ===== */
 .subjects-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  /* 默认两列：手机/iPad/横屏统一保持 2 个学科一行
+     极窄屏（<360px）回退 1 列避免卡片过挤 */
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
+}
+@media (max-width: 359px) {
+  .subjects-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .subject-card {
@@ -2300,7 +2307,7 @@ html, body {
     gap: 18px;
   }
   .subjects-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, 1fr);
   }
 
   /* 触控热区优化（Apple HIG 建议最小 44px） */
@@ -2359,9 +2366,9 @@ html, body {
     gap: 20px;
   }
 
-  /* 学科首页：4 列学科卡 */
+  /* 学科首页：保持 2 列学科卡（按需求一致） */
   .subjects-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 20px;
   }
   .subject-card { padding: 24px; }

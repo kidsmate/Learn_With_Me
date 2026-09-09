@@ -4,7 +4,7 @@
 <dict>
     <!-- 应用名称 -->
     <key>CFBundleDisplayName</key>
-    <string>安冉学习助手</string>
+    <string>LearnWithMe</string>
 
     <!-- 横竖屏都支持 -->
     <key>UISupportedInterfaceOrientations</key>

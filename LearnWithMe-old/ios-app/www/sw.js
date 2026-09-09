@@ -1,4 +1,4 @@
-// 安冉的学习助手 - Service Worker (PWA 离线支持)
+// LearnWithMe - Service Worker (PWA 离线支持)
 const CACHE_NAME = 'anran-learning-v23';
 const ASSETS = [
   './',
