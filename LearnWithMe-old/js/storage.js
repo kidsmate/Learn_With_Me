@@ -13,6 +13,7 @@ const DEFAULT_DATA = {
   records: [],             // { type: 'learn'|'reward'|'punish'|'redeem'|'checkin', name, value, time }
   wishes: [],              // { id, name, icon, cost, granted }
   textbooks: [],           // { id, name, subject, size, uploadTime, chapters }
+  currentGrade: '七年级上', // 当前学习年级（七年级上/七年级下/八年级上/八年级下/九年级上/九年级下）
 };
 
 function loadData() {

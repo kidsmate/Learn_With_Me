@@ -7,6 +7,48 @@ let calYear = new Date().getFullYear();
 let selectedWishIcon = '🎁';
 let currentPdfData = null;
 
+// ============ 年级过滤 ============
+// 可选年级（按用户实际学习进度切换，默认七年级上学期）
+const GRADES = ['七年级上', '七年级下', '八年级上', '八年级下', '九年级上', '九年级下'];
+
+/**
+ * 判断章节是否属于当前年级
+ * chapter.title 形如 "七年级上册 · 第一单元" / "七年级下册 · ..." / "八年级 · ..." / "九年级 · ..."
+ * state.currentGrade 形如 "七年级上"
+ *
+ * 匹配规则：
+ *  - "七年级上" 匹配标题以 "七年级上册" 开头的章节
+ *  - "七年级下" 匹配标题以 "七年级下册" 开头的章节
+ *  - 八/九年级上下同理
+ *  - 标题形如 "七年级 · ..."（不带上下册）当作"七年级上"和"七年级下"都可见
+ */
+function chapterMatchesGrade(chapter, grade) {
+  if (!grade) return true;
+  const t = chapter.title || '';
+  const lower = grade.endsWith('上') ? grade.slice(0, -1) + '上册'
+              : grade.endsWith('下') ? grade.slice(0, -1) + '下册'
+              : grade;
+  if (t.startsWith(lower)) return true;
+  // 不带"上下册"的章节（如 "七年级 · ..."），按"上/下"都能看到
+  const bare = grade.replace(/[上下]$/, '');
+  if (t.startsWith(bare + ' ·') || t.startsWith(bare + '·')) return true;
+  return false;
+}
+
+/** 返回某学科在当前年级下的章节（深拷贝以避免修改原数据） */
+function getChaptersForCurrentGrade(subject) {
+  return (subject.chapters || []).filter(c => chapterMatchesGrade(c, state.currentGrade));
+}
+
+/** 返回某学科在当前年级下的可见知识点数量 */
+function countPointsForCurrentGrade(subject) {
+  let total = 0;
+  for (const c of getChaptersForCurrentGrade(subject)) {
+    total += (c.points || []).length;
+  }
+  return total;
+}
+
 // ============ IndexedDB 工具（保存 PDF 原始文件）============
 const DB_NAME = 'anran_learning';
 const DB_VERSION = 1;
@@ -174,11 +216,13 @@ function renderTodayTasks() {
 
   // 每科按单元（chapter）顺序找第一个含未学知识点的章节，
   // 在该章节未学知识点中按 (日期+学科+章节) 随机选 1 个
+  // 仅考虑当前年级下的章节
   const tasks = [];
   for (const subjId of CORE_SUBJECT_IDS) {
     const subj = SUBJECTS.find(s => s.id === subjId);
     if (!subj) continue;
-    for (const chap of subj.chapters) {
+    const chapters = getChaptersForCurrentGrade(subj);
+    for (const chap of chapters) {
       const unlearned = chap.points.filter(p => !state.learnedPoints[p.id]);
       if (unlearned.length === 0) continue;
       const seed = today + ':' + subjId + ':' + chap.title;
@@ -189,7 +233,7 @@ function renderTodayTasks() {
   }
 
   if (tasks.length === 0) {
-    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🎉</div>太棒了！5 科任务全部学完啦</div>';
+    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🎉</div>当前年级的任务已全部学完啦！</div>';
     return;
   }
 
@@ -276,9 +320,12 @@ function dailyCheckin() {
 // ============ 学科列表 ============
 function renderSubjects() {
   const grid = document.getElementById('subjectsGrid');
-  grid.innerHTML = SUBJECTS.map(s => {
+  // 只显示当前年级有章节的学科
+  const visible = SUBJECTS.filter(s => getChaptersForCurrentGrade(s).length > 0);
+  grid.innerHTML = visible.map(s => {
+    const chapters = getChaptersForCurrentGrade(s);
     let total = 0, learned = 0;
-    s.chapters.forEach(c => c.points.forEach(p => {
+    chapters.forEach(c => c.points.forEach(p => {
       total++;
       if (state.learnedPoints[p.id]) learned++;
     }));
@@ -301,8 +348,10 @@ function openSubject(subjectId) {
   if (!currentSubject) return;
   document.getElementById('subjectDetailTitle').textContent = `${currentSubject.icon} ${currentSubject.name}`;
 
+  // 只展示当前年级的章节
+  const visibleChapters = getChaptersForCurrentGrade(currentSubject);
   let total = 0, learned = 0;
-  currentSubject.chapters.forEach(c => c.points.forEach(p => {
+  visibleChapters.forEach(c => c.points.forEach(p => {
     total++;
     if (state.learnedPoints[p.id]) learned++;
   }));
@@ -311,24 +360,34 @@ function openSubject(subjectId) {
   document.getElementById('subjectProgressText').textContent = `${learned} / ${total}（${pct}%）`;
 
   const list = document.getElementById('knowledgeList');
-  list.innerHTML = currentSubject.chapters.map(c => `
-    <div class="chapter-block">
-      <div class="section-title" style="color:${currentSubject.color}">📚 ${c.title}</div>
-      ${c.points.map(p => {
-        const isLearned = !!state.learnedPoints[p.id];
-        return `
-          <div class="kp-item ${isLearned ? 'learned' : ''}" onclick="openKnowledge('${currentSubject.id}','${p.id}')">
-            <div class="kp-status">${isLearned ? '✓' : ''}</div>
-            <div class="kp-info">
-              <div class="kp-title">${p.title}</div>
-              <div class="kp-chapter">${c.title}</div>
+  if (visibleChapters.length === 0) {
+    list.innerHTML = `<div class="empty-state">
+      <div style="font-size:48px;margin-bottom:12px">📚</div>
+      <div style="color:var(--text-light);font-size:15px;line-height:1.6">
+        当前年级（${state.currentGrade}）暂无该学科的内容<br>
+        可在"设置"中切换年级，或上传对应 PDF 教材
+      </div>
+    </div>`;
+  } else {
+    list.innerHTML = visibleChapters.map(c => `
+      <div class="chapter-block">
+        <div class="section-title" style="color:${currentSubject.color}">📚 ${c.title}</div>
+        ${c.points.map(p => {
+          const isLearned = !!state.learnedPoints[p.id];
+          return `
+            <div class="kp-item ${isLearned ? 'learned' : ''}" onclick="openKnowledge('${currentSubject.id}','${p.id}')">
+              <div class="kp-status">${isLearned ? '✓' : ''}</div>
+              <div class="kp-info">
+                <div class="kp-title">${p.title}</div>
+                <div class="kp-chapter">${c.title}</div>
+              </div>
+              <div class="kp-action">${isLearned ? '已掌握' : '去学习'}</div>
             </div>
-            <div class="kp-action">${isLearned ? '已掌握' : '去学习'}</div>
-          </div>
-        `;
-      }).join('')}
-    </div>
-  `).join('');
+          `;
+        }).join('')}
+      </div>
+    `).join('');
+  }
 
   navigate('subject-detail');
 }
@@ -3587,11 +3646,13 @@ function guessSubject(filename) {
 function renderSettings() {
   document.getElementById('settingNickname').value = state.nickname;
   document.getElementById('settingDailyGoal').value = state.dailyGoal;
+  document.getElementById('settingGrade').value = state.currentGrade || '七年级上';
 }
 
 function saveSettings() {
   state.nickname = document.getElementById('settingNickname').value.trim() || '安冉';
   state.dailyGoal = parseInt(document.getElementById('settingDailyGoal').value) || 3;
+  state.currentGrade = document.getElementById('settingGrade').value || '七年级上';
   saveData(state);
   renderAll();
   showToast('设置已保存');
@@ -3729,6 +3790,7 @@ function setupEventListeners() {
   // 设置
   document.getElementById('settingNickname').addEventListener('change', saveSettings);
   document.getElementById('settingDailyGoal').addEventListener('change', saveSettings);
+  document.getElementById('settingGrade').addEventListener('change', saveSettings);
   document.getElementById('btnReset').addEventListener('click', () => {
     showConfirm('确定要重置所有数据吗？此操作不可恢复！', () => {
       resetData();
