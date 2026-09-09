@@ -49,6 +49,67 @@ function countPointsForCurrentGrade(subject) {
   return total;
 }
 
+/**
+ * 查找某学科在当前年级下已上传的 PDF 教材
+ * 匹配规则：教材 subject 字段 === 学科 name（如"语文"），且教材名含当前年级标识
+ */
+function findTextbookForSubject(subject) {
+  const grade = state.currentGrade || '七年级上';
+  // 年级简称："七年级上" -> "七年级上册" 和 "七上"
+  const fullGrade = grade + '册';
+  const shortGrade = grade.replace('年级', '').replace('上', '上册').replace('下', '下册');
+  return (state.textbooks || []).find(t => {
+    if (t.subject !== subject.name) return false;
+    // 教材名包含年级标识（如"语文 七年级上册.pdf"或"七上语文.pdf"）
+    const name = t.name || '';
+    return name.includes(fullGrade) || name.includes(grade) || name.includes(shortGrade) || name.includes(grade.replace('年级',''));
+  });
+}
+
+/**
+ * 从 PDF 教材的 units / chapters 构造与内置 SUBJECTS 同结构的章节列表
+ * 优先使用 units（新版含 lessons），回退到 chapters（旧版字符串数组）
+ */
+function buildChaptersFromTextbook(textbook) {
+  if (!textbook) return [];
+  // 新版：units 含 lessons
+  if (textbook.units && textbook.units.length > 0) {
+    return textbook.units.map((u, i) => {
+      const lessons = (u.lessons || []).map((l, j) => ({
+        id: `${textbook.id}-u${i}-l${j}`,
+        title: l.title || `第${j+1}节`,
+        content: l.content || ''
+      }));
+      return {
+        title: u.title || `第${i+1}单元`,
+        points: lessons
+      };
+    });
+  }
+  // 旧版：chapters 是字符串数组
+  if (textbook.chapters && textbook.chapters.length > 0) {
+    return textbook.chapters.map((c, i) => ({
+      title: typeof c === 'string' ? c : (c.title || `第${i+1}章`),
+      points: []
+    }));
+  }
+  return [];
+}
+
+/**
+ * 获取某学科在当前年级下用于展示的章节
+ * 优先用已上传的 PDF 教材；无 PDF 教材时回退到内置 SUBJECTS 数据
+ */
+function getDisplayChapters(subject) {
+  const textbook = findTextbookForSubject(subject);
+  if (textbook) {
+    const chapters = buildChaptersFromTextbook(textbook);
+    if (chapters.length > 0) return chapters;
+  }
+  return getChaptersForCurrentGrade(subject);
+}
+
+
 // ============ IndexedDB 工具（保存 PDF 原始文件）============
 const DB_NAME = 'anran_learning';
 const DB_VERSION = 1;
@@ -320,20 +381,22 @@ function dailyCheckin() {
 // ============ 学科列表 ============
 function renderSubjects() {
   const grid = document.getElementById('subjectsGrid');
-  // 只显示当前年级有章节的学科
-  const visible = SUBJECTS.filter(s => getChaptersForCurrentGrade(s).length > 0);
+  // 只显示当前年级有章节的学科（PDF 教材或内置数据有内容即可）
+  const visible = SUBJECTS.filter(s => getDisplayChapters(s).length > 0);
   grid.innerHTML = visible.map(s => {
-    const chapters = getChaptersForCurrentGrade(s);
+    const chapters = getDisplayChapters(s);
     let total = 0, learned = 0;
-    chapters.forEach(c => c.points.forEach(p => {
+    chapters.forEach(c => (c.points || []).forEach(p => {
       total++;
       if (state.learnedPoints[p.id]) learned++;
     }));
     const pct = total ? Math.round(learned / total * 100) : 0;
+    const hasTextbook = !!findTextbookForSubject(s);
+    const tag = hasTextbook ? '<span style="font-size:11px;color:#27AE60;margin-left:4px">📚PDF</span>' : '';
     return `
       <div class="subject-card" style="border-top-color:${s.color}" onclick="openSubject('${s.id}')">
         <div class="subject-icon">${s.icon}</div>
-        <div class="subject-name">${s.name}</div>
+        <div class="subject-name">${s.name}${tag}</div>
         <div class="subject-desc">${s.desc}</div>
         <div class="subject-progress-mini"><div class="fill" style="width:${pct}%;background:${s.color}"></div></div>
         <div class="subject-progress-text">${learned} / ${total} 知识点</div>
@@ -346,12 +409,15 @@ function renderSubjects() {
 function openSubject(subjectId) {
   currentSubject = SUBJECTS.find(s => s.id === subjectId);
   if (!currentSubject) return;
-  document.getElementById('subjectDetailTitle').textContent = `${currentSubject.icon} ${currentSubject.name}`;
+  // 标题加 PDF 标识
+  const textbook = findTextbookForSubject(currentSubject);
+  const titleTag = textbook ? ` <span style="font-size:13px;color:#27AE60">📚 ${textbook.name.replace(/\.pdf$/i,'')}</span>` : '';
+  document.getElementById('subjectDetailTitle').innerHTML = `${currentSubject.icon} ${currentSubject.name}${titleTag}`;
 
-  // 只展示当前年级的章节
-  const visibleChapters = getChaptersForCurrentGrade(currentSubject);
+  // 只展示当前年级的章节（优先用 PDF 教材）
+  const visibleChapters = getDisplayChapters(currentSubject);
   let total = 0, learned = 0;
-  visibleChapters.forEach(c => c.points.forEach(p => {
+  visibleChapters.forEach(c => (c.points || []).forEach(p => {
     total++;
     if (state.learnedPoints[p.id]) learned++;
   }));
@@ -369,19 +435,24 @@ function openSubject(subjectId) {
       </div>
     </div>`;
   } else {
+    // 若来自 PDF 教材，点击课文直接打开教材阅读器
+    const fromTextbook = !!textbook;
     list.innerHTML = visibleChapters.map(c => `
       <div class="chapter-block">
         <div class="section-title" style="color:${currentSubject.color}">📚 ${c.title}</div>
-        ${c.points.map(p => {
+        ${(c.points || []).map(p => {
           const isLearned = !!state.learnedPoints[p.id];
+          const clickHandler = fromTextbook
+            ? `openTextbookBySubject('${currentSubject.id}')`
+            : `openKnowledge('${currentSubject.id}','${p.id}')`;
           return `
-            <div class="kp-item ${isLearned ? 'learned' : ''}" onclick="openKnowledge('${currentSubject.id}','${p.id}')">
+            <div class="kp-item ${isLearned ? 'learned' : ''}" onclick="${clickHandler}">
               <div class="kp-status">${isLearned ? '✓' : ''}</div>
               <div class="kp-info">
                 <div class="kp-title">${p.title}</div>
                 <div class="kp-chapter">${c.title}</div>
               </div>
-              <div class="kp-action">${isLearned ? '已掌握' : '去学习'}</div>
+              <div class="kp-action">${fromTextbook ? '📖阅读' : (isLearned ? '已掌握' : '去学习')}</div>
             </div>
           `;
         }).join('')}
@@ -390,6 +461,14 @@ function openSubject(subjectId) {
   }
 
   navigate('subject-detail');
+}
+
+// 通过学科打开对应 PDF 教材阅读器
+function openTextbookBySubject(subjectId) {
+  const subj = SUBJECTS.find(s => s.id === subjectId);
+  if (!subj) return;
+  const tb = findTextbookForSubject(subj);
+  if (tb) openTextbook(tb.id);
 }
 
 // ============ 知识点详情（学习页）============
