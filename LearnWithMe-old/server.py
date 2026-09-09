@@ -532,16 +532,21 @@ def _compute_endpages_v2(units, total_pages):
     return units
 
 
-def _detect_page_offset(page_num_lines, total_pages):
-    """自动检测页码偏移量（参考用户 Python 程序的 offset 逻辑）。
+def _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages=None):
+    """自动检测页码偏移量。
 
-    教材每页底部通常印有课本页码（如 2、6、14），但 PDF 第 1 页往往是封面，
-    导致 PDF 真实页码 = 课本印刷页码 + offset。
-    本函数扫描所有页面的纯页码行，统计 (PDF页码 - 印刷页码) 的众数作为偏移。
+    offset = PDF 真实页码 - 课本印刷页码。
+    教材每页底部通常印有课本页码，但 PDF 前几页（封面、扉页、版权页、目录）
+    没有印刷页码，导致 PDF 页码 ≠ 印刷页码。
 
-    例如：印刷页 2 出现在 PDF 第 9 页 → offset = 9 - 2 = 7
+    策略（按优先级）：
+    1. 扫描正文页的纯页码行，统计 (PDF页码 - 印刷页码) 的众数
+    2. 若正文纯页码行不足，扫描页脚短行（末尾是数字的短行）作为补充
+    3. 若仍不足，根据目录结构估算：offset ≈ 目录结束页 - 首个目录条目的印刷页码
     """
     offset_count = {}
+
+    # 策略1：纯页码行
     for p, nums in page_num_lines.items():
         for item in nums:
             text = item['text'].strip()
@@ -549,19 +554,44 @@ def _detect_page_offset(page_num_lines, total_pages):
             if not m:
                 continue
             printed = int(m.group(1))
-            # 印刷页码应在合理范围（1 ~ 总页数），且 PDF 页码应大于印刷页码
             if 1 <= printed <= total_pages and p > printed:
                 offset = p - printed
                 offset_count[offset] = offset_count.get(offset, 0) + 1
-    if not offset_count:
-        return 0
-    # 取出现次数最多的偏移量（众数）
-    best_offset = max(offset_count.items(), key=lambda x: x[1])
-    # 至少需要 2 个页面命中才认为偏移可靠
-    if best_offset[1] < 2:
-        return 0
-    print(f"[API] 页码偏移检测: {best_offset[0]} (命中 {best_offset[1]} 页)")
-    return best_offset[0]
+
+    # 策略2：页脚短行（末尾是数字的短行，可能是页码）
+    if not offset_count or max(offset_count.values()) < 2:
+        for p in range(1, total_pages + 1):
+            for l in page_lines.get(p, []):
+                t = l['text'].strip()
+                if len(t) > 20:
+                    continue
+                m = re.search(r'(\d{1,3})\s*$', t)
+                if m:
+                    printed = int(m.group(1))
+                    if 1 <= printed <= total_pages and p > printed and printed > 0:
+                        offset = p - printed
+                        offset_count[offset] = offset_count.get(offset, 0) + 1
+
+    if offset_count:
+        best_offset = max(offset_count.items(), key=lambda x: x[1])
+        if best_offset[1] >= 2:
+            print(f"[API] 页码偏移检测: {best_offset[0]} (命中 {best_offset[1]} 行)")
+            return best_offset[0]
+
+    # 策略3：根据目录结构估算偏移
+    # 目录从第4页开始，内容在目录之后；首个目录条目的印刷页码通常为1
+    if toc_pages and len(toc_pages) >= 1:
+        toc_end = max(toc_pages)
+        # 估算内容起始页 = 目录结束页 + 1（可能有空白页，取 +1）
+        estimated_content_start = toc_end + 1
+        # 首个目录条目的印刷页码通常是1，偏移量 = 内容起始页 - 1
+        estimated_offset = estimated_content_start - 1
+        if 0 < estimated_offset < total_pages:
+            print(f"[API] 页码偏移估算(目录结构): {estimated_offset} (目录结束页={toc_end})")
+            return estimated_offset
+
+    print(f"[API] ⚠️ 页码偏移检测失败，使用默认偏移 0")
+    return 0
 
 
 def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_pages):
@@ -803,17 +833,17 @@ def _find_toc_pages(page_lines, rules, total_pages):
     """定位目录页（只看目录页，绝不扫描正文）。
 
     教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录。
-    目录可能有 1~3 页，需从第4页开始逐页检测，直到遇到非目录页为止。
+    目录可能有 1~3 页，从第4页开始逐页检测，遇到非目录页即停止。
 
-    目录页特征：
-    - 含"目录"标题字样
-    - 或有多个单元标题（第X单元）
-    - 或有多个带页码的条目（行末是数字）
+    目录页判定核心特征：
+    - 含"目录"标题字样（首页通常有）
+    - 大量行以数字结尾（页码），且数字在合理范围内（1~总页数）
+    - 含多个单元/课文标题
     """
     toc_pages = set()
-    # 从第4页开始检查，最多检查到第10页（目录不会超过3-4页）
+    # 目录从第4页开始，最多3页，检查第4~6页
     start_page = 4
-    end_page = min(10, total_pages)
+    end_page = min(6, total_pages)
 
     for p in range(start_page, end_page + 1):
         lines = page_lines.get(p, [])
@@ -834,35 +864,31 @@ def _find_toc_pages(page_lines, rules, total_pages):
         # 特征2：多个单元标题
         unit_count = len(rules['unit_re'].findall(text_all))
 
-        # 特征3：多个带页码的条目（行末是数字）
-        numbered_entries = 0
+        # 特征3：带页码的有效目录条目
+        # 有效条目 = 行末是数字（1~总页数范围），且数字前有非数字标题文本
+        valid_toc_entries = 0
         for l in lines:
-            if re.search(r'\d{1,3}\s*$', l['text'].strip()):
-                numbered_entries += 1
+            t = l['text'].strip()
+            m = re.search(r'(\d{1,3})\s*$', t)
+            if m:
+                num = int(m.group(1))
+                # 页码应在合理范围内（1 ~ 总页数），且标题部分非空
+                title_part = t[:m.start()].strip()
+                if 1 <= num <= total_pages and len(title_part) >= 1:
+                    valid_toc_entries += 1
 
         # 特征4：英语表格式目录的 "Page Sx"/"Page x" 引用行
         page_ref_count = sum(1 for l in lines if PAGE_REF_RE.match(l['text'].strip()))
 
-        # 判定是否为目录页：
-        # - 首个目录页（还没找到目录页时）：宽松判定
-        # - 后续目录页（已找到目录页后）：严格判定
-        #   需有"目录"标题，或有3+带页码条目，或有单元+课文条目（双栏布局）
-        #   （避免正文中恰好含"第X单元"的页面被误判为目录续页）
-        if not toc_pages:
-            is_toc = has_toc_title or unit_count >= 1 or numbered_entries >= 4 or page_ref_count >= 2
-        else:
-            # 后续目录页需有：目录标题，或3+带页码条目，或单元+2个以上课文条目
-            # 要求2+课文条目是因为正文页可能恰好含1个课文标题
-            # 英语表格式目录续页：也接受有 2+ "Page x" 引用行或 2+ 圈码/Unit 标题
-            lesson_count = sum(1 for l in lines if rules['lesson_re'].match(l['text'].strip()))
-            is_toc = (has_toc_title or numbered_entries >= 3
-                      or (unit_count >= 1 and lesson_count >= 2)
-                      or page_ref_count >= 2 or unit_count >= 2)
+        # 判定是否为目录页
+        # 有效目录条目数达到阈值即判定为目录页（目录页通常有5+条带页码条目）
+        is_toc = has_toc_title or valid_toc_entries >= 4 or unit_count >= 2 or page_ref_count >= 2
 
-        # 调试：打印每页检测结果
-        print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, unit_count={unit_count}, numbered_entries={numbered_entries}, page_refs={page_ref_count}, is_toc={is_toc}", flush=True)
+        print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, "
+              f"valid_toc_entries={valid_toc_entries}, unit_count={unit_count}, "
+              f"page_refs={page_ref_count}, is_toc={is_toc}", flush=True)
+
         if not is_toc and p <= start_page + 1:
-            # 打印前2页的内容帮助诊断
             preview = text_all[:300].replace('\n', ' | ')
             print(f"[API]     内容预览: {preview}", flush=True)
 
@@ -870,20 +896,6 @@ def _find_toc_pages(page_lines, rules, total_pages):
             toc_pages.add(p)
         else:
             if toc_pages:
-                break
-
-    # 如果从第4页没找到，尝试从第3页开始（有些教材目录从第3页开始）
-    if not toc_pages:
-        for p in range(3, min(8, total_pages) + 1):
-            lines = page_lines.get(p, [])
-            if not lines:
-                continue
-            text_all = "\n".join(l['text'] for l in lines)
-            has_toc_title = any(kw in text_all for kw in ['目录', '目錄', 'Contents'])
-            numbered_entries = sum(1 for l in lines if re.search(r'\d{1,3}\s*$', l['text'].strip()))
-            if has_toc_title or numbered_entries >= 4:
-                toc_pages.add(p)
-            elif toc_pages:
                 break
 
     if toc_pages:
@@ -978,14 +990,15 @@ def extract_toc_with_fitz(pdf_bytes):
     if not font_count:
         return {'units': [], 'pageOffset': 0, 'totalPages': total_pages, 'method': 'none'}
 
-    # ★ 步骤 1：自动检测页码偏移量（参考用户 Python 程序的 offset 逻辑）
-    # offset = PDF 真实页码 - 课本印刷页码
-    page_offset = _detect_page_offset(page_num_lines, total_pages)
-
-    # ★ 步骤 2：定位目录页（关键：只看目录页，绝不扫描正文！）
+    # ★ 步骤 1：定位目录页（关键：只看目录页，绝不扫描正文！）
     # 教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录
     # 目录可能有 1~3 页，需动态识别目录结束位置
     toc_pages = _find_toc_pages(page_lines, rules, total_pages)
+
+    # ★ 步骤 2：自动检测页码偏移量
+    # offset = PDF 真实页码 - 课本印刷页码
+    # 若正文页码检测失败，可用目录结构作为 fallback 估算
+    page_offset = _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages)
 
     if toc_pages:
         toc_units = _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, page_offset, total_pages)

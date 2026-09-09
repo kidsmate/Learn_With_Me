@@ -100,8 +100,8 @@ function buildChaptersFromTextbook(textbook) {
 }
 
 /**
- * 获取某学科在当前年级下用于展示的章节
- * 优先用已上传的 PDF 教材；无 PDF 教材时回退到内置 SUBJECTS 数据
+ * 获取某学科用于展示的章节
+ * 仅根据已上传的 PDF 教材展示；无 PDF 教材时返回空数组
  */
 function getDisplayChapters(subject) {
   const textbook = findTextbookForSubject(subject);
@@ -109,7 +109,7 @@ function getDisplayChapters(subject) {
     const chapters = buildChaptersFromTextbook(textbook);
     if (chapters.length > 0) return chapters;
   }
-  return getChaptersForCurrentGrade(subject);
+  return [];
 }
 
 
@@ -396,7 +396,9 @@ function renderSubjects() {
     const pct = total ? Math.round(learned / total * 100) : 0;
     const hasTextbook = !!findTextbookForSubject(s);
     const tag = hasTextbook ? '<span style="font-size:11px;color:#27AE60;margin-left:4px">📚PDF</span>' : '';
-    const progressText = total > 0 ? `${learned} / ${total} 知识点` : '本年级未开始';
+    const progressText = hasTextbook
+      ? (total > 0 ? `${learned} / ${total} 知识点` : '教材已上传')
+      : '未上传教材';
     return `
       <div class="subject-card" style="border-top-color:${s.color}" onclick="openSubject('${s.id}')">
         <div class="subject-icon">${s.icon}</div>
@@ -430,13 +432,16 @@ function openSubject(subjectId) {
   document.getElementById('subjectProgressText').textContent = `${learned} / ${total}（${pct}%）`;
 
   const list = document.getElementById('knowledgeList');
-  if (visibleChapters.length === 0) {
+  if (!textbook || visibleChapters.length === 0) {
     list.innerHTML = `<div class="empty-state">
-      <div style="font-size:48px;margin-bottom:12px">📚</div>
-      <div style="color:var(--text-light);font-size:15px;line-height:1.6">
-        当前年级（${state.currentGrade}）暂无该学科的内容<br>
-        可在"设置"中切换年级，或上传对应 PDF 教材
+      <div style="font-size:48px;margin-bottom:12px">📄</div>
+      <div style="color:var(--text-light);font-size:15px;line-height:1.6;margin-bottom:16px">
+        尚未上传 ${currentSubject.name} 的 PDF 教材<br>
+        请前往"教材"页面上传对应教材后查看章节
       </div>
+      <button class="btn-primary" onclick="navigate('textbooks')" style="padding:10px 24px;font-size:14px;cursor:pointer;border:none;border-radius:10px;background:var(--primary);color:#fff">
+        去上传教材
+      </button>
     </div>`;
   } else {
     // 若来自 PDF 教材，点击课文直接打开教材阅读器
