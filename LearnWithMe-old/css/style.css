@@ -1976,6 +1976,24 @@ html, body {
   font-weight: 600;
   margin-right: 8px;
 }
+.ex-tag-region {
+  background: #e67e22;
+}
+.ex-tag-type {
+  background: #6c5ce7;
+}
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+  text-decoration: underline;
+}
+.exam-paper-item {
+  border-left: 3px solid #e67e22;
+}
 
 /* 答题区 */
 .quiz-input-area {

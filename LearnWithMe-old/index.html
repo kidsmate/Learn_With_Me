@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" href="icons/icon-192.png">
   <title>安冉的学习助手</title>
-  <link rel="stylesheet" href="css/style.css?v=20260909g">
+  <link rel="stylesheet" href="css/style.css?v=20260909h">
   <!-- PDF.js for textbook PDF processing -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <!-- pdf-lib for adding bookmarks to PDFs -->
@@ -132,7 +132,7 @@
           <button class="learn-tab" data-section="keypoints">🔑 核心要点</button>
           <button class="learn-tab" data-section="textbook">📖 教材内容</button>
           <button class="learn-tab" data-section="video">🎬 教学视频</button>
-          <button class="learn-tab" data-section="exercise">✏️ 习题练习</button>
+          <button class="learn-tab" data-section="exercise">🏅 中考真题</button>
         </div>
 
         <!-- Section Contents -->
@@ -361,13 +361,13 @@
   <!-- Toast -->
   <div class="toast" id="toast"></div>
 
-  <script src="js/data.js?v=20260909g"></script>
-  <script src="js/learning.js?v=20260909g"></script>
-  <script src="js/storage.js?v=20260909g"></script>
-  <script src="js/app.js?v=20260909g"></script>
+  <script src="js/data.js?v=20260909h"></script>
+  <script src="js/learning.js?v=20260909h"></script>
+  <script src="js/storage.js?v=20260909h"></script>
+  <script src="js/app.js?v=20260909h"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js?v=20260909g').then(reg => {
+      navigator.serviceWorker.register('sw.js?v=20260909h').then(reg => {
         // 检查是否有新版本的 Service Worker
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;

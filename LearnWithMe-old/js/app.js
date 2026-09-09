@@ -350,22 +350,6 @@ function openLearnPage(subj, point) {
 
   const content = LEARNING_CONTENT[point.id] || {};
 
-  // 知识总结（含 5 个纵向子板块：1.总结 2.生词 3.成语 4.写作技巧 5.修辞手法）
-  const summaryText = content.summary || point.content || '暂无总结内容';
-  const vocab = content.vocab || [];
-  const idioms = content.idioms || [];
-  const techs = content.techniques || [];
-  const rh = content.rhetoric || [];
-
-  // 准备每节朗读用的纯文本
-  const readSections = [
-    {id: 'sum1', title: '1 知识总结', text: summaryText},
-    {id: 'sum2', title: '2 生词积累', text: vocab.map(v => `${v.word}${v.pinyin||''}：${v.meaning}`).join('。')},
-    {id: 'sum3', title: '3 成语释义', text: idioms.map(v => `${v.word}：${v.meaning}`).join('。')},
-    {id: 'sum4', title: '4 写作技巧', text: techs.map(t => `${t.name}：${t.desc}`).join('。')},
-    {id: 'sum5', title: '5 修辞手法', text: rh.map(r => `${r.type}：例句${r.example||''}；${r.analysis||''}`).join('。')},
-  ];
-
   // 读取朗读进度
   const readProg = state.readProgress && state.readProgress[point.id] || {};
   // 朗读按钮模板：每节一个
@@ -381,61 +365,202 @@ function openLearnPage(subj, point) {
     `;
   }
 
-  const summaryHtml = `
-    <div class="sum-block">
-      <div class="sum-block-title"><span class="sum-num">1</span>知识总结</div>
-      <p class="learn-text">${escapeHtml(summaryText)}</p>
-      ${readBtnHtml(readSections[0])}
-    </div>
+  // ===== 知识总结：按学科定制子板块 =====
+  // 语文/历史/道法：总结/生词/成语/写作技巧/修辞手法
+  // 数学：基本概念/解题技巧/易错易混/典型例题
+  // 英语：知识总结/中考词汇/中考短语/中考语法/中考句型
+  let summaryHtml = '';
+  let readSections = [];
 
-    <div class="sum-block">
-      <div class="sum-block-title"><span class="sum-num">2</span>生词积累</div>
-      ${vocab.length ? vocab.map(v => `
-        <div class="vocab-item">
-          <div class="vocab-head">
-            <span class="vocab-word">${escapeHtml(v.word)}</span>
-            ${v.pinyin ? `<span class="vocab-pinyin">[${escapeHtml(v.pinyin)}]</span>` : ''}
+  if (subj.id === 'math') {
+    // ---- 数学：基本概念 / 解题技巧 / 易错易混 / 典型例题 ----
+    const summaryText = content.summary || point.content || '暂无总结内容';
+    const techs = content.techniques || [];       // 解题技巧
+    const mistakes = content.commonMistakes || []; // 易错易混
+    const examples = content.examples || [];      // 典型例题
+
+    readSections = [
+      {id: 'sum1', title: '1 基本概念', text: summaryText},
+      {id: 'sum2', title: '2 解题技巧', text: techs.map(t => `${t.name}：${t.desc}`).join('。')},
+      {id: 'sum3', title: '3 易错易混', text: mistakes.map(m => `${m.topic}：${m.mistake}。正确：${m.correct}`).join('。')},
+      {id: 'sum4', title: '4 典型例题', text: examples.map(e => `例：${e.q} 解：${e.a}`).join('。')},
+    ];
+
+    summaryHtml = `
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">1</span>基本概念</div>
+        <p class="learn-text">${escapeHtml(summaryText)}</p>
+        ${readBtnHtml(readSections[0])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">2</span>解题技巧</div>
+        ${techs.length ? techs.map(t => `
+          <div class="tech-item">
+            <div class="tech-name">${escapeHtml(t.name)}</div>
+            <div class="tech-desc">${escapeHtml(t.desc)}</div>
           </div>
-          <div class="vocab-meaning">${escapeHtml(v.meaning)}</div>
-        </div>
-      `).join('') : '<p class="learn-text">暂无生词数据</p>'}
-      ${readBtnHtml(readSections[1])}
-    </div>
+        `).join('') : '<p class="learn-text">暂无解题技巧</p>'}
+        ${readBtnHtml(readSections[1])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">3</span>易错易混</div>
+        ${mistakes.length ? mistakes.map(m => `
+          <div class="idiom-item">
+            <div class="idiom-word">${escapeHtml(m.topic)}</div>
+            <div class="idiom-meaning"><span style="color:#e74c3c">❌ ${escapeHtml(m.mistake)}</span><br><span style="color:#27ae60">✅ ${escapeHtml(m.correct)}</span></div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无易错点</p>'}
+        ${readBtnHtml(readSections[2])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">4</span>典型例题</div>
+        ${examples.length ? examples.map(e => `
+          <div class="tech-item">
+            <div class="tech-name">例题：${escapeHtml(e.q)}</div>
+            <div class="tech-desc">解：${escapeHtml(e.a)}${e.e ? '<br>解析：' + escapeHtml(e.e) : ''}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无典型例题</p>'}
+        ${readBtnHtml(readSections[3])}
+      </div>
+    `;
+  } else if (subj.id === 'english') {
+    // ---- 英语：知识总结 / 中考词汇 / 中考短语 / 中考语法 / 中考句型 ----
+    const summaryText = content.summary || point.content || '暂无总结内容';
+    const vocab = content.vocab || [];       // 中考词汇
+    const phrases = content.phrases || [];   // 中考短语
+    const grammar = content.grammar || [];   // 中考语法
+    const patterns = content.patterns || [];  // 中考句型
 
-    <div class="sum-block">
-      <div class="sum-block-title"><span class="sum-num">3</span>成语释义</div>
-      ${idioms.length ? idioms.map(v => `
-        <div class="idiom-item">
-          <div class="idiom-word">${escapeHtml(v.word)}</div>
-          <div class="idiom-meaning">${escapeHtml(v.meaning)}</div>
-        </div>
-      `).join('') : '<p class="learn-text">暂无成语数据</p>'}
-      ${readBtnHtml(readSections[2])}
-    </div>
+    readSections = [
+      {id: 'sum1', title: '1 知识总结', text: summaryText},
+      {id: 'sum2', title: '2 中考词汇', text: vocab.map(v => `${v.word}${v.pinyin||v.phonetic||''}：${v.meaning}`).join('。')},
+      {id: 'sum3', title: '3 中考短语', text: phrases.map(p => `${p.phrase}：${p.meaning}`).join('。')},
+      {id: 'sum4', title: '4 中考语法', text: grammar.map(g => `${g.point}：${g.rule}`).join('。')},
+      {id: 'sum5', title: '5 中考句型', text: patterns.map(p => `${p.pattern}：${p.usage}`).join('。')},
+    ];
 
-    <div class="sum-block">
-      <div class="sum-block-title"><span class="sum-num">4</span>写作技巧</div>
-      ${techs.length ? techs.map(t => `
-        <div class="tech-item">
-          <div class="tech-name">${escapeHtml(t.name)}</div>
-          <div class="tech-desc">${escapeHtml(t.desc)}</div>
-        </div>
-      `).join('') : '<p class="learn-text">暂无写作技巧数据</p>'}
-      ${readBtnHtml(readSections[3])}
-    </div>
+    summaryHtml = `
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">1</span>知识总结</div>
+        <p class="learn-text">${escapeHtml(summaryText)}</p>
+        ${readBtnHtml(readSections[0])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">2</span>中考词汇</div>
+        ${vocab.length ? vocab.map(v => `
+          <div class="vocab-item">
+            <div class="vocab-head">
+              <span class="vocab-word">${escapeHtml(v.word)}</span>
+              ${v.phonetic ? `<span class="vocab-pinyin">/${escapeHtml(v.phonetic)}/</span>` : ''}
+            </div>
+            <div class="vocab-meaning">${escapeHtml(v.meaning)}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无中考词汇</p>'}
+        ${readBtnHtml(readSections[1])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">3</span>中考短语</div>
+        ${phrases.length ? phrases.map(p => `
+          <div class="idiom-item">
+            <div class="idiom-word">${escapeHtml(p.phrase)}</div>
+            <div class="idiom-meaning">${escapeHtml(p.meaning)}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无中考短语</p>'}
+        ${readBtnHtml(readSections[2])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">4</span>中考语法</div>
+        ${grammar.length ? grammar.map(g => `
+          <div class="tech-item">
+            <div class="tech-name">${escapeHtml(g.point)}</div>
+            <div class="tech-desc">${escapeHtml(g.rule)}${g.example ? '<br>例：' + escapeHtml(g.example) : ''}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无中考语法</p>'}
+        ${readBtnHtml(readSections[3])}
+      </div>
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">5</span>中考句型</div>
+        ${patterns.length ? patterns.map(p => `
+          <div class="tech-item">
+            <div class="tech-name">${escapeHtml(p.pattern)}</div>
+            <div class="tech-desc">${escapeHtml(p.usage)}${p.example ? '<br>例：' + escapeHtml(p.example) : ''}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无中考句型</p>'}
+        ${readBtnHtml(readSections[4])}
+      </div>
+    `;
+  } else {
+    // ---- 语文/历史/道法：总结/生词/成语/写作技巧/修辞手法 ----
+    const summaryText = content.summary || point.content || '暂无总结内容';
+    const vocab = content.vocab || [];
+    const idioms = content.idioms || [];
+    const techs = content.techniques || [];
+    const rh = content.rhetoric || [];
 
-    <div class="sum-block">
-      <div class="sum-block-title"><span class="sum-num">5</span>修辞手法</div>
-      ${rh.length ? rh.map(r => `
-        <div class="rh-item">
-          <div class="rh-type">${escapeHtml(r.type)}</div>
-          ${r.example ? `<div class="rh-example">「${escapeHtml(r.example)}」</div>` : ''}
-          ${r.analysis ? `<div class="rh-analysis">${escapeHtml(r.analysis)}</div>` : ''}
-        </div>
-      `).join('') : '<p class="learn-text">暂无修辞手法数据</p>'}
-      ${readBtnHtml(readSections[4])}
-    </div>
-  `;
+    readSections = [
+      {id: 'sum1', title: '1 知识总结', text: summaryText},
+      {id: 'sum2', title: '2 生词积累', text: vocab.map(v => `${v.word}${v.pinyin||''}：${v.meaning}`).join('。')},
+      {id: 'sum3', title: '3 成语释义', text: idioms.map(v => `${v.word}：${v.meaning}`).join('。')},
+      {id: 'sum4', title: '4 写作技巧', text: techs.map(t => `${t.name}：${t.desc}`).join('。')},
+      {id: 'sum5', title: '5 修辞手法', text: rh.map(r => `${r.type}：例句${r.example||''}；${r.analysis||''}`).join('。')},
+    ];
+
+    summaryHtml = `
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">1</span>知识总结</div>
+        <p class="learn-text">${escapeHtml(summaryText)}</p>
+        ${readBtnHtml(readSections[0])}
+      </div>
+
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">2</span>生词积累</div>
+        ${vocab.length ? vocab.map(v => `
+          <div class="vocab-item">
+            <div class="vocab-head">
+              <span class="vocab-word">${escapeHtml(v.word)}</span>
+              ${v.pinyin ? `<span class="vocab-pinyin">[${escapeHtml(v.pinyin)}]</span>` : ''}
+            </div>
+            <div class="vocab-meaning">${escapeHtml(v.meaning)}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无生词数据</p>'}
+        ${readBtnHtml(readSections[1])}
+      </div>
+
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">3</span>成语释义</div>
+        ${idioms.length ? idioms.map(v => `
+          <div class="idiom-item">
+            <div class="idiom-word">${escapeHtml(v.word)}</div>
+            <div class="idiom-meaning">${escapeHtml(v.meaning)}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无成语数据</p>'}
+        ${readBtnHtml(readSections[2])}
+      </div>
+
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">4</span>写作技巧</div>
+        ${techs.length ? techs.map(t => `
+          <div class="tech-item">
+            <div class="tech-name">${escapeHtml(t.name)}</div>
+            <div class="tech-desc">${escapeHtml(t.desc)}</div>
+          </div>
+        `).join('') : '<p class="learn-text">暂无写作技巧数据</p>'}
+        ${readBtnHtml(readSections[3])}
+      </div>
+
+      <div class="sum-block">
+        <div class="sum-block-title"><span class="sum-num">5</span>修辞手法</div>
+        ${rh.length ? rh.map(r => `
+          <div class="rh-item">
+            <div class="rh-type">${escapeHtml(r.type)}</div>
+            ${r.example ? `<div class="rh-example">「${escapeHtml(r.example)}」</div>` : ''}
+            ${r.analysis ? `<div class="rh-analysis">${escapeHtml(r.analysis)}</div>` : ''}
+          </div>
+        `).join('') : '<p class="learn-text">暂无修辞手法数据</p>'}
+        ${readBtnHtml(readSections[4])}
+      </div>
+    `;
+  }
 
   // 把朗读节列表挂到全局供 startReadAloud 使用
   window.__currentReadSections = readSections;
@@ -461,7 +586,7 @@ function openLearnPage(subj, point) {
   // 教学视频
   renderLearnVideo(content.videoKeywords || point.title);
 
-  // 习题练习：支持选择/判断/填空/简答四类题型，纵向布局，提供选项和输入框
+  // 中考真题：基础练习 + 历年广东省各地区中考真题
   const exs = content.exercises || [];
   // 兼容旧数据：无 type 字段的题，按 q/a 形式自动判断 type
   exs.forEach(e => {
@@ -482,8 +607,11 @@ function openLearnPage(subj, point) {
   const exTypeLabel = {choice:'选择题', judge:'判断题', fill:'填空题', short:'简答题'};
   const exTypeIcon = {choice:'🔘', judge:'⚖️', fill:'✏️', short:'📝'};
 
+  // 历年广东省各地区中考真题
+  const examPapers = content.examPapers || [];
+
   document.getElementById('learnExercise').innerHTML = `
-    <div class="learn-section-title">✏️ 习题练习</div>
+    <div class="learn-section-title">🏅 中考真题</div>
     <div class="quiz-progress-bar" id="quizProgress"></div>
     ${exs.length ? exs.map((e, i) => {
       const type = e.type || 'fill';
@@ -522,13 +650,35 @@ function openLearnPage(subj, point) {
           </div>
         </div>
       `;
-    }).join('') : '<p class="learn-text">暂无习题</p>'}
+    }).join('') : '<p class="learn-text">暂无基础练习</p>'}
     ${exs.length ? `
       <div class="quiz-submit-bar">
         <button class="btn-secondary" onclick="toggleAllQuizAnswers()">查看全部答案</button>
         <button class="btn-primary" onclick="submitQuiz()" id="btnSubmitQuiz">提交答题</button>
       </div>
       <div class="quiz-result" id="quizResult"></div>
+    ` : ''}
+
+    ${examPapers.length ? `
+      <div class="exam-papers-section">
+        <div class="learn-section-title" style="margin-top:24px;">📋 历年广东省各地区中考真题</div>
+        <p class="learn-text" style="color:var(--text-light);font-size:13px;">以下真题来自广东省各地区历年中考，涵盖不同题型，标注来源地区。</p>
+        ${examPapers.map((ep, ei) => `
+          <div class="exercise-item exam-paper-item" id="ep-${ei}">
+            <div class="ex-q">
+              <span class="ex-tag ex-tag-region">📍 ${escapeHtml(ep.region)} ${ep.year}</span>
+              <span class="ex-tag ex-tag-type">${exTypeIcon[ep.type]||'📝'} ${exTypeLabel[ep.type]||'解答题'}</span>
+              ${escapeHtml(ep.q)}
+            </div>
+            <div class="ex-answer" id="ep-ans-${ei}" style="display:none;">
+              <div class="ex-ans-label">参考答案</div>
+              <div class="ex-ans-text">${escapeHtml(ep.a)}</div>
+              ${ep.e ? `<div class="ex-exp-label">解析</div><div class="ex-exp-text">${escapeHtml(ep.e)}</div>` : ''}
+            </div>
+            <button class="btn-link" onclick="var d=document.getElementById('ep-ans-${ei}');d.style.display=d.style.display==='none'?'block':'none';this.textContent=d.style.display==='none'?'查看答案':'收起答案';">查看答案</button>
+          </div>
+        `).join('')}
+      </div>
     ` : ''}
   `;
 
