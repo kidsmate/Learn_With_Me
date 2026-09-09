@@ -532,77 +532,104 @@ def _compute_endpages_v2(units, total_pages):
     return units
 
 
-def _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages=None):
-    """自动检测页码偏移量。
+def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_page,
+                                    total_pages, rules, prev_pdf_page=1):
+    """根据目录条目标题在正文中搜索，定位真实 PDF 物理页码。
 
-    offset = PDF 真实页码 - 课本印刷页码。
-    教材每页底部通常印有课本页码，但 PDF 前几页（封面、扉页、版权页、目录）
-    没有印刷页码，导致 PDF 页码 ≠ 印刷页码。
+    新思路：不再用 offset = PDF真实页 - 印刷页码 间接换算，
+    而是直接在正文页中搜索标题文本，找到第一个匹配页作为真实 PDF 页。
 
-    策略（按优先级）：
-    1. 扫描正文页的纯页码行，统计 (PDF页码 - 印刷页码) 的众数
-    2. 若正文纯页码行不足，扫描页脚短行（末尾是数字的短行）作为补充
-    3. 若仍不足，根据目录结构估算：offset ≈ 目录结束页 - 首个目录条目的印刷页码
+    匹配策略（按优先级）：
+    1. 精确匹配：页面顶部某行 == 清理后的标题（去编号/页码）
+    2. 包含匹配：页面顶部某行包含标题核心词
+    3. 跨行匹配：标题拆词后，在页面顶部多行连续出现
 
-    重要：仅使用目录页之后的正文页页码，避免目录中的条目页码干扰偏移计算。
-         偏移量限制在 1~30 页范围内（教材前置页不会超过 30 页）。
+    只扫描页面顶部（前 40% 区域），避免误匹配正文引用。
+    搜索范围：从上一个匹配页开始往后扫，限制在合理窗口内（≤200页）。
     """
-    toc_end = max(toc_pages) if toc_pages else 0
-    offset_count = {}
+    # 标题预处理：去掉编号前缀（"1 春" → "春"）、作者（"春 / 朱自清" → "春"）
+    # 保留核心标题用于匹配
+    norm_title = title.strip()
+    # 去掉编号前缀
+    m = re.match(r'^(?:\d+\*?\s*[.．、]?\s*|第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:课|节)\s*|课题\s*[一二三四五六七八九十百零〇两0-9]+\s*|Section\s*[AB]\s*\d*[a-z]*[-–]\d*[a-z]*\s*)', norm_title, re.IGNORECASE)
+    if m:
+        norm_title = norm_title[m.end():].strip()
+    # 去掉作者（保留 / 前部分）
+    if '/' in norm_title:
+        norm_title = norm_title.split('/')[0].strip()
+    # 去掉首尾标点空白
+    norm_title = re.sub(r'^[\s·、，,]+|[\s·、，,]+$', '', norm_title)
+    if not norm_title or len(norm_title) < 2:
+        return prev_pdf_page  # 标题过短，无法搜索
 
-    def _is_valid_offset(off):
-        """偏移量合理性校验：1~30 页。"""
-        return 1 <= off <= 30
+    # 拆出核心词（用于包含匹配），去掉常见虚词
+    core_words = [w for w in re.split(r'[\s·、，,/]+', norm_title) if len(w) >= 2]
+    if not core_words:
+        core_words = [norm_title]
 
-    # 策略1：纯页码行（仅目录页之后的正文页）
-    for p, nums in page_num_lines.items():
-        if p <= toc_end:
+    toc_set = set(toc_pages)
+    search_start = max(start_search_page, prev_pdf_page)
+    # 搜索窗口：往后最多扫 200 页，避免无限扫描
+    search_end = min(total_pages, search_start + 200)
+
+    def _is_page_top(line_y, all_ys):
+        """判断行是否在页面顶部 40% 区域。"""
+        if not all_ys:
+            return True
+        y_min = min(all_ys)
+        y_max = max(all_ys)
+        y_range = y_max - y_min if y_max > y_min else 1
+        # PDF 坐标 y 越大越靠上，顶部 = y 接近 y_max
+        return line_y >= (y_min + y_range * 0.40)
+
+    for p in range(search_start, search_end + 1):
+        if p in toc_set:
             continue
-        for item in nums:
-            text = item['text'].strip()
-            m = PAGE_NUM_RE.match(text)
-            if not m:
+        lines = page_lines.get(p, [])
+        if not lines:
+            continue
+        all_ys = [l['y'] for l in lines]
+        # 只看顶部行
+        top_lines = [l for l in lines if _is_page_top(l['y'], all_ys)]
+
+        for line in top_lines:
+            line_text = line['text'].strip()
+            if not line_text:
                 continue
-            printed = int(m.group(1))
-            if 1 <= printed <= total_pages and p > printed:
-                offset = p - printed
-                if _is_valid_offset(offset):
-                    offset_count[offset] = offset_count.get(offset, 0) + 1
+            # 策略1：精确匹配（行 == 标题，或去掉编号后 == 标题）
+            line_clean = re.sub(r'^[\s·、，,\-—]+|[\s·、，,\-—]+$', '', line_text)
+            if line_clean == norm_title:
+                return p
+            # 行去掉编号后等于标题
+            m2 = re.match(r'^(?:\d+\*?\s*[.．、]?\s*|第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:课|节)\s*|课题\s*[一二三四五六七八九十百零〇两0-9]+\s*)', line_text)
+            if m2:
+                rest = line_text[m2.end():].strip()
+                if rest == norm_title:
+                    return p
+            # 策略2：包含匹配（行包含完整标题核心词）
+            if norm_title in line_text and len(line_text) <= len(norm_title) + 20:
+                return p
+            # 行包含所有核心词
+            if len(core_words) >= 2 and all(w in line_text for w in core_words) and len(line_text) <= 40:
+                return p
 
-    # 策略2：页脚短行（末尾是数字的短行，可能是页码，仅正文页）
-    if not offset_count or max(offset_count.values()) < 2:
-        for p in range(toc_end + 1, total_pages + 1):
-            for l in page_lines.get(p, []):
-                t = l['text'].strip()
-                if len(t) > 20:
-                    continue
-                m = re.search(r'(\d{1,3})\s*$', t)
-                if m:
-                    printed = int(m.group(1))
-                    if 1 <= printed <= total_pages and p > printed and printed > 0:
-                        offset = p - printed
-                        if _is_valid_offset(offset):
-                            offset_count[offset] = offset_count.get(offset, 0) + 1
+    # 跨行匹配：标题拆词后，在页面顶部连续多行出现
+    for p in range(search_start, search_end + 1):
+        if p in toc_set:
+            continue
+        lines = page_lines.get(p, [])
+        if not lines:
+            continue
+        all_ys = [l['y'] for l in lines]
+        top_lines = [l['text'].strip() for l in lines if _is_page_top(l['y'], all_ys)]
+        # 标题所有核心词都出现在顶部连续的几行中
+        if len(core_words) >= 2:
+            text_block = ' '.join(top_lines[:5])
+            if all(w in text_block for w in core_words):
+                return p
 
-    if offset_count:
-        best_offset = max(offset_count.items(), key=lambda x: x[1])
-        if best_offset[1] >= 2:
-            print(f"[API] 页码偏移检测: {best_offset[0]} (命中 {best_offset[1]} 行, 目录结束页={toc_end})")
-            return best_offset[0]
-
-    # 策略3：根据目录结构估算偏移
-    # 目录从第4页开始，内容在目录之后；首个目录条目的印刷页码通常为1
-    if toc_pages and len(toc_pages) >= 1:
-        # 估算内容起始页 = 目录结束页 + 1（可能有空白页，取 +1）
-        estimated_content_start = toc_end + 1
-        # 首个目录条目的印刷页码通常是1，偏移量 = 内容起始页 - 1
-        estimated_offset = estimated_content_start - 1
-        if _is_valid_offset(estimated_offset):
-            print(f"[API] 页码偏移估算(目录结构): {estimated_offset} (目录结束页={toc_end})")
-            return estimated_offset
-
-    print(f"[API] ⚠️ 页码偏移检测失败，使用默认偏移 0")
-    return 0
+    # 找不到匹配，用上一个匹配页 + 1 估算
+    return min(prev_pdf_page + 1, total_pages)
 
 
 def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_pages):
@@ -841,6 +868,61 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
     return units if units else None
 
 
+def _relocate_units_by_body_search(units, page_lines, toc_pages, total_pages, rules):
+    """根据书签标题在正文中匹配，重新定位每个 lesson 的真实 PDF 页码。
+
+    新思路核心：不再用 offset = PDF真实页 - 印刷页码 间接换算（这是
+    页码从 96 起跳等错误的根因），而是把目录条目的标题当作"关键字"，
+    在正文中搜索第一次出现的页面，作为真实 PDF 物理页码。
+
+    这样书签直接指向真实 PDF 页，pageOffset=0，前端跳转无需加偏移。
+
+    处理顺序：按目录顺序逐个搜索，每个 lesson 的搜索起点 = 上一个
+    lesson 的真实页码（保证后一个 lesson 的页码 ≥ 前一个）。
+    """
+    if not units:
+        return units
+    toc_end = max(toc_pages) if toc_pages else 3
+    # 正文从目录结束页 + 1 开始搜索
+    search_start = toc_end + 1
+
+    prev_page = max(1, search_start)
+    for u in units:
+        # 单元标题页：用单元第一个 lesson 的页码或单元标题搜索
+        unit_first_page = None
+        for l in u['lessons']:
+            if l.get('type') == 'lesson':
+                # lesson 自身
+                real_page = _find_lesson_pdf_page_by_title(
+                    page_lines, l['title'], toc_pages, search_start,
+                    total_pages, rules, prev_page
+                )
+                l['startPage'] = real_page
+                prev_page = real_page
+                if unit_first_page is None:
+                    unit_first_page = real_page
+                # sublessons
+                for sub in l.get('children', []):
+                    sub_page = _find_lesson_pdf_page_by_title(
+                        page_lines, sub['title'], toc_pages, search_start,
+                        total_pages, rules, prev_page
+                    )
+                    sub['startPage'] = sub_page
+                    prev_page = sub_page
+            elif l.get('type') == 'group':
+                # 栏目无独立正文，跳过（不更新 prev_page）
+                continue
+        # 更新单元 page 为首个 lesson 的页码
+        if unit_first_page is not None:
+            u['page'] = unit_first_page
+
+    # 重新计算 endPage
+    _compute_endpages_v2(units, total_pages)
+    print(f"[API] ✅ 正文标题匹配定位完成: {sum(len(u['lessons']) for u in units)} 个书签, "
+          f"首个单元页={units[0]['page']}")
+    return units
+
+
 def _find_toc_pages(page_lines, rules, total_pages):
     """定位目录页（只看目录页，绝不扫描正文）。
 
@@ -853,9 +935,10 @@ def _find_toc_pages(page_lines, rules, total_pages):
     - 含多个单元/课文标题
     """
     toc_pages = set()
-    # 目录从第4页开始，最多3页，检查第4~6页
+    # 目录从第4页开始，最多4页，检查第4~7页
+    # 用户描述：目录页可能 1~4 页，需动态判断结束位置
     start_page = 4
-    end_page = min(6, total_pages)
+    end_page = min(7, total_pages)
 
     for p in range(start_page, end_page + 1):
         lines = page_lines.get(p, [])
@@ -1004,27 +1087,31 @@ def extract_toc_with_fitz(pdf_bytes):
 
     # ★ 步骤 1：定位目录页（关键：只看目录页，绝不扫描正文！）
     # 教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录
-    # 目录可能有 1~3 页，需动态识别目录结束位置
+    # 目录可能有 1~4 页，需动态识别目录结束位置
     toc_pages = _find_toc_pages(page_lines, rules, total_pages)
 
-    # ★ 步骤 2：自动检测页码偏移量
-    # offset = PDF 真实页码 - 课本印刷页码
-    # 若正文页码检测失败，可用目录结构作为 fallback 估算
-    page_offset = _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages)
+    # ★ 步骤 2：解析目录页提取条目（标题 + 印刷页码）
+    # 此处不再依赖 offset 计算真实页码，offset 仅作为兜底估算
+    page_offset = 0  # 默认偏移量设为 0，由正文标题匹配决定真实页
 
     if toc_pages:
         toc_units = _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, page_offset, total_pages)
         if toc_units:
-            print(f"[API] ✅ 目录页解析成功: {len(toc_units)} 个单元, "
-                  f"目录页={sorted(toc_pages)}, offset={page_offset}")
+            # ★ 步骤 3：根据书签标题在正文中匹配，定位真实 PDF 物理页码
+            # 这是新思路核心：不通过 offset 间接换算，直接在正文搜索标题
+            toc_units = _relocate_units_by_body_search(
+                toc_units, page_lines, toc_pages, total_pages, rules
+            )
+            print(f"[API] ✅ 目录页解析+正文匹配定位成功: {len(toc_units)} 个单元, "
+                  f"目录页={sorted(toc_pages)}, pageOffset=0")
             return {
                 'units': toc_units,
-                'pageOffset': 0,    # 目录页页码已加 offset 转为真实 PDF 页，前端无需再加
+                'pageOffset': 0,    # 已通过正文匹配定位真实 PDF 页，前端无需加偏移
                 'totalPages': total_pages,
-                'method': 'toc_page',
+                'method': 'toc_body_match',
                 'subject': subject_key,
                 'subjectName': rules['name'],
-                'detectedOffset': page_offset,
+                'detectedOffset': 0,
             }
         print(f"[API] ⚠️ 目录页解析失败，目录页={sorted(toc_pages)}，返回空结果")
 
@@ -1036,7 +1123,7 @@ def extract_toc_with_fitz(pdf_bytes):
         'method': 'toc_failed',
         'subject': subject_key,
         'subjectName': rules['name'],
-        'detectedOffset': page_offset,
+        'detectedOffset': 0,
     }
 
 

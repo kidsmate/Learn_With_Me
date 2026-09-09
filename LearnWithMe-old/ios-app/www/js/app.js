@@ -1975,12 +1975,14 @@ async function tocAutoExtract(textbookId) {
     } catch (e) {}
 
     // 2) 目录页解析
+    let usedTocPages = false;
     if (!hasLessons) {
       const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
       if (tocResult && tocResult.units && tocResult.units.length > 0) {
         units = tocResult.units;
         t.pageOffset = tocResult.pageOffset || 0;
         hasLessons = true;
+        usedTocPages = true;
       }
     }
     // 3) 字号提取
@@ -2002,7 +2004,13 @@ async function tocAutoExtract(textbookId) {
       }
     }
     if (hasLessons && !hadOutline) {
-      t.pageOffset = t.pageOffset || detectPageOffset(pageTexts, units) || 0;
+      // ★ 新方案：使用 toc-pages 方法时，已通过正文标题匹配定位真实页码，
+      // pageOffset 必须保持 0，跳过 detectPageOffset 调用（它是页码从 96 起跳错误的根因）
+      if (!usedTocPages) {
+        t.pageOffset = t.pageOffset || detectPageOffset(pageTexts, units) || 0;
+      } else {
+        t.pageOffset = 0;
+      }
     }
 
     // 5) 前端全部失败 → 调用服务端 pymupdf（需电脑在线）
@@ -2158,7 +2166,14 @@ function handlePdfUpload(file) {
         }
       }
       if (hasLessons && !hadOutline) {
-        currentPdfData.pageOffset = currentPdfData.pageOffset || detectPageOffset(pageTexts, units) || 0;
+        // ★ 新方案：使用 toc-pages 方法时，已通过正文标题匹配定位真实页码，
+        // pageOffset 必须保持 0，跳过 detectPageOffset 调用（它是页码从 96 起跳错误的根因）
+        const usedTocPages = triedMethods.includes('toc-pages');
+        if (!usedTocPages) {
+          currentPdfData.pageOffset = currentPdfData.pageOffset || detectPageOffset(pageTexts, units) || 0;
+        } else {
+          currentPdfData.pageOffset = 0;
+        }
       }
 
       // 5) 前端全部失败 → 调用服务端 pymupdf（需电脑在线，离线时跳过）
@@ -2810,6 +2825,159 @@ function extractUnitsFromContent(pageTexts, totalPages) {
 }
 
 /**
+ * 根据目录条目标题在正文中搜索，定位真实 PDF 物理页码（新思路核心）。
+ *
+ * 不再依赖 offset = PDF真实页 - 印刷页码 的间接换算（这是页码从 96 起跳
+ * 等错误的根因）。直接在正文页中搜索标题文本，找到第一个匹配页作为真实页。
+ *
+ * 匹配策略（按优先级）：
+ * 1. 精确匹配：页面顶部某行 == 清理后的标题（去编号/页码/作者）
+ * 2. 包含匹配：页面顶部某行包含标题核心词
+ * 3. 跨行匹配：标题拆词后，在页面顶部连续多行出现
+ *
+ * 只扫描页面顶部（前 40% 区域），避免误匹配正文引用。
+ * 搜索范围：从上一个匹配页开始往后扫，限制在合理窗口内（≤200页）。
+ */
+function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage,
+                                   totalPages, prevPdfPage) {
+  // 标题预处理：去掉编号前缀、作者、首尾标点
+  let normTitle = (title || '').trim();
+  // 去掉编号前缀（语文 "1 春"、历史 "第1课"、数学 "1.1"、化学 "课题1"、英语 "Section A"）
+  const m = normTitle.match(/^(?:\d+\*?\s*[.．、]?\s*|第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:课|节)\s*|课题\s*[一二三四五六七八九十百零〇两0-9]+\s*|Section\s*[AB]\s*\d*[a-z]*[-–]\d*[a-z]*\s*)/i);
+  if (m) normTitle = normTitle.slice(m[0].length).trim();
+  // 去掉作者（保留 / 前部分）
+  if (normTitle.includes('/')) normTitle = normTitle.split('/')[0].trim();
+  // 去掉首尾标点空白
+  normTitle = normTitle.replace(/^[\s·、，,\-—]+|[\s·、，,\-—]+$/g, '');
+  if (!normTitle || normTitle.length < 2) return prevPdfPage;
+
+  // 拆出核心词（用于包含匹配）
+  const coreWords = normTitle.split(/[\s·、，,/]+/).filter(w => w.length >= 2);
+  if (coreWords.length === 0) coreWords.push(normTitle);
+
+  const searchStart = Math.max(searchStartPage, prevPdfPage);
+  const searchEnd = Math.min(totalPages, searchStart + 200);
+
+  // 判断行是否在页面顶部 40% 区域
+  function isPageTop(lineY, allYs) {
+    if (!allYs || allYs.length === 0) return true;
+    const yMin = Math.min(...allYs);
+    const yMax = Math.max(...allYs);
+    const yRange = (yMax > yMin) ? (yMax - yMin) : 1;
+    // PDF 坐标 y 越大越靠上，顶部 = y 接近 yMax
+    return lineY >= (yMin + yRange * 0.40);
+  }
+
+  // 策略1+2：精确匹配 + 包含匹配
+  for (let p = searchStart; p <= searchEnd; p++) {
+    if (tocPagesSet.has(p)) continue;
+    const lines = pageLines[p] || [];
+    if (!lines.length) continue;
+    const allYs = lines.map(l => l.y);
+    const topLines = lines.filter(l => isPageTop(l.y, allYs));
+
+    for (const line of topLines) {
+      const lineText = (line.text || '').trim();
+      if (!lineText) continue;
+      // 精确匹配（行 == 标题）
+      const lineClean = lineText.replace(/^[\s·、，,\-—]+|[\s·、，,\-—]+$/g, '');
+      if (lineClean === normTitle) return p;
+      // 行去掉编号后等于标题
+      const m2 = lineText.match(/^(?:\d+\*?\s*[.．、]?\s*|第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:课|节)\s*|课题\s*[一二三四五六七八九十百零〇两0-9]+\s*)/);
+      if (m2) {
+        const rest = lineText.slice(m2[0].length).trim();
+        if (rest === normTitle) return p;
+      }
+      // 包含匹配：行包含完整标题核心词
+      if (lineText.includes(normTitle) && lineText.length <= normTitle.length + 20) return p;
+      // 行包含所有核心词
+      if (coreWords.length >= 2 && coreWords.every(w => lineText.includes(w)) && lineText.length <= 40) return p;
+    }
+  }
+
+  // 策略3：跨行匹配（标题拆词后，在页面顶部连续多行出现）
+  for (let p = searchStart; p <= searchEnd; p++) {
+    if (tocPagesSet.has(p)) continue;
+    const lines = pageLines[p] || [];
+    if (!lines.length) continue;
+    const allYs = lines.map(l => l.y);
+    const topLines = lines.filter(l => isPageTop(l.y, allYs)).map(l => (l.text || '').trim());
+    if (coreWords.length >= 2) {
+      const textBlock = topLines.slice(0, 5).join(' ');
+      if (coreWords.every(w => textBlock.includes(w))) return p;
+    }
+  }
+
+  // 找不到匹配，用上一个匹配页 + 1 估算
+  return Math.min(prevPdfPage + 1, totalPages);
+}
+
+/**
+ * 遍历 units，用正文标题匹配重新定位每个 lesson 的真实 PDF 页码。
+ * 按目录顺序逐个搜索，每个 lesson 的搜索起点 = 上一个 lesson 的真实页码，
+ * 保证后一个 lesson 的页码 ≥ 前一个。
+ */
+function relocateUnitsByBodySearch(units, pageLines, tocPages, totalPages) {
+  if (!units || !units.length) return units;
+  const tocSet = new Set(tocPages);
+  const tocEnd = tocPages.length > 0 ? Math.max(...tocPages) : 3;
+  const searchStart = tocEnd + 1;
+  let prevPage = Math.max(1, searchStart);
+
+  for (const u of units) {
+    let unitFirstPage = null;
+    for (const l of u.lessons) {
+      if (l.type === 'lesson') {
+        const realPage = findLessonPdfPageByTitle(
+          pageLines, l.title, tocSet, searchStart, totalPages, prevPage
+        );
+        l.startPage = realPage;
+        prevPage = realPage;
+        if (unitFirstPage === null) unitFirstPage = realPage;
+        // sublessons
+        for (const sub of (l.children || [])) {
+          const subPage = findLessonPdfPageByTitle(
+            pageLines, sub.title, tocSet, searchStart, totalPages, prevPage
+          );
+          sub.startPage = subPage;
+          prevPage = subPage;
+        }
+      }
+      // group（栏目）无独立正文，跳过
+    }
+    if (unitFirstPage !== null) u.page = unitFirstPage;
+  }
+
+  // 重新计算 endPage
+  const leaves = [];
+  for (const u of units) {
+    for (const l of u.lessons) {
+      if (l.type === 'lesson') {
+        leaves.push(l);
+        for (const sub of (l.children || [])) leaves.push(sub);
+      }
+    }
+  }
+  for (let i = 0; i < leaves.length; i++) {
+    const sp = leaves[i].startPage || 1;
+    leaves[i].startPage = sp;
+    const nxt = i + 1 < leaves.length ? (leaves[i + 1].startPage || totalPages) : totalPages + 1;
+    leaves[i].endPage = Math.max(sp, nxt - 1);
+    if (leaves[i].endPage > totalPages) leaves[i].endPage = totalPages;
+  }
+  for (const u of units) {
+    for (const l of u.lessons) {
+      if (l.type === 'lesson' && l.children && l.children.length > 0) {
+        l.endPage = l.children[l.children.length - 1].endPage;
+      }
+    }
+  }
+
+  console.log('[正文匹配定位] ✅ 完成, 首个单元页=', units[0].page);
+  return units;
+}
+
+/**
  * 客户端目录页提取（仅解析目录页，绝不扫描正文）
  * 与服务端 _parse_toc_page 逻辑一致，作为服务端不可用时的回退
  * 支持双栏布局（左栏标题 + 右栏页码，通过 y 坐标配对）
@@ -2896,10 +3064,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
     pageLines[i] = lines;
   }
 
-  // 定位目录页（从第4页开始）
+  // 定位目录页（从第4页开始，最多4页目录，第4~7页）
+  // 用户描述：目录页可能 1~4 页，需动态判断结束位置
   const tocPages = [];
   const startPage = 4;
-  const endPage = Math.min(10, totalPages);
+  const endPage = Math.min(7, totalPages);
   for (let p = startPage; p <= endPage; p++) {
     const lines = pageLines[p] || [];
     const textAll = lines.map(l => l.text).join('\n');
@@ -2937,32 +3106,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
   console.log('[目录页提取] 目录页:', tocPages);
 
-  // 检测页码偏移（仅使用目录页之后的正文页页码，避免目录条目页码干扰）
-  const tocEndPage = Math.max(...tocPages);
-  let offset = 0;
-  const offsetCount = {};
-  for (const p of Object.keys(pageNums)) {
-    const pdfPage = parseInt(p);
-    // 只统计目录页之后的正文页页码（页脚的印刷页码）
-    if (pdfPage <= tocEndPage) continue;
-    for (const item of pageNums[p]) {
-      const printed = item.num;
-      // 合理性校验：印刷页码应远小于 PDF 页码（因为有前置页），
-      // 且差值（偏移）应在合理范围内（1~30 页）
-      if (printed >= 1 && printed <= totalPages && pdfPage > printed) {
-        const off = pdfPage - printed;
-        if (off >= 1 && off <= 30) {
-          offsetCount[off] = (offsetCount[off] || 0) + 1;
-        }
-      }
-    }
-  }
-  let bestOff = 0, bestCnt = 0;
-  for (const [off, cnt] of Object.entries(offsetCount)) {
-    if (cnt > bestCnt) { bestCnt = cnt; bestOff = parseInt(off); }
-  }
-  if (bestCnt >= 2) offset = bestOff;
-  console.log('[目录页提取] 页码偏移:', offset, '(命中', bestCnt, '页, 目录结束页=', tocEndPage, ')');
+  // ★ 新思路：不再计算页码偏移量 offset（这是页码从 96 起跳错误的根因）
+  // 目录条目的标题将作为关键字，在正文中搜索定位真实 PDF 页码
+  // offset = 0 表示 bookPage 暂时按印刷页码 + 0 估算，最终由 relocateUnitsByBodySearch 重新定位
+  const offset = 0;
+  console.log('[目录页提取] 跳过 offset 计算，将由正文标题匹配定位真实页码');
 
   // 构建页码索引
   const pageNumIndex = {};
@@ -3171,6 +3319,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
 
   console.log('[目录页提取] ✅ 成功:', validUnits.length, '个单元');
+
+  // ★ 新思路核心：根据书签标题在正文中匹配，重新定位每个 lesson 的真实 PDF 页码
+  // 不再用 offset 间接换算，直接搜索标题定位真实页，pageOffset=0
+  validUnits = relocateUnitsByBodySearch(validUnits, pageLines, tocPages, totalPages);
+  console.log('[目录页提取] ✅ 正文匹配定位完成, pageOffset=0');
   return { units: validUnits, pageOffset: 0 };
 }
 
