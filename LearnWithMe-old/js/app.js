@@ -2858,6 +2858,7 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
                                    totalPages, prevPdfPage) {
   // 标题预处理：去掉编号前缀、作者、首尾标点
   let normTitle = (title || '').trim();
+  const origTitle = normTitle;
   // 去掉编号前缀（语文 "1 春"、历史 "第1课"、数学 "1.1"、化学 "课题1"、英语 "Section A"）
   const m = normTitle.match(/^(?:\d+\*?\s*[.．、]?\s*|第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:课|节)\s*|课题\s*[一二三四五六七八九十百零〇两0-9]+\s*|Section\s*[AB]\s*\d*[a-z]*[-–]\d*[a-z]*\s*)/i);
   if (m) normTitle = normTitle.slice(m[0].length).trim();
@@ -2865,7 +2866,10 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
   if (normTitle.includes('/')) normTitle = normTitle.split('/')[0].trim();
   // 去掉首尾标点空白
   normTitle = normTitle.replace(/^[\s·、，,\-—]+|[\s·、，,\-—]+$/g, '');
-  if (!normTitle || normTitle.length === 0) return prevPdfPage;
+  if (!normTitle || normTitle.length === 0) {
+    console.log(`  [搜索] "${origTitle}" → 清理后为空, 返回 prev=${prevPdfPage}`);
+    return prevPdfPage;
+  }
 
   // 拆出核心词（用于包含匹配），单字标题保留为 coreWords
   const coreWords = normTitle.split(/[\s·、，,/]+/).filter(w => w.length >= 1);
@@ -2877,6 +2881,8 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
   const searchStart = Math.max(searchStartPage, prevPdfPage);
   const searchEnd = Math.min(totalPages, searchStart + 200);
 
+  console.log(`  [搜索] "${origTitle}" → "${normTitle}" (短=${isShortTitle}) 范围=[${searchStart}..${searchEnd}] prev=${prevPdfPage}`);
+
   // 判断行是否在页面顶部区域（放宽到 50%，有些大字号标题 y 偏下）
   function isPageTop(lineY, allYs) {
     if (!allYs || allYs.length === 0) return true;
@@ -2887,7 +2893,8 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
     return lineY >= (yMin + yRange * 0.50);
   }
 
-  // 策略1+2：精确匹配 + 包含匹配
+  // 策略1+2：精确匹配 + 包含匹配（只扫页面顶部 50%）
+  let foundPage = null;
   for (let p = searchStart; p <= searchEnd; p++) {
     if (tocPagesSet.has(p)) continue;
     const lines = pageLines[p] || [];
@@ -2900,22 +2907,32 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
       if (!lineText) continue;
       // 精确匹配（行 == 标题）
       const lineClean = lineText.replace(/^[\s·、，,\-—]+|[\s·、，,\-—]+$/g, '');
-      if (lineClean === normTitle) return p;
+      if (lineClean === normTitle) {
+        console.log(`  [搜索] ✅ 精确匹配 p${p}: "${lineText}"`);
+        return p;
+      }
       // 行去掉编号后等于标题
       const m2 = lineText.match(/^(?:\d+\*?\s*[.．、]?\s*|第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:课|节)\s*|课题\s*[一二三四五六七八九十百零〇两0-9]+\s*)/);
       if (m2) {
         const rest = lineText.slice(m2[0].length).trim();
-        if (rest === normTitle) return p;
+        if (rest === normTitle) {
+          console.log(`  [搜索] ✅ 去编号匹配 p${p}: "${lineText}" → "${rest}"`);
+          return p;
+        }
       }
       // 包含匹配：行包含完整标题，且行长度限制（避免匹配正文长句）
       if (lineText.includes(normTitle)) {
-        // 短标题更严格：行长度不应超过 normTitle + 5（单字标题匹配 "春 朱自清" 这种）
-        // 长标题宽松：normTitle.length + 20
         const maxLen = isShortTitle ? (normTitle.length + 8) : (normTitle.length + 20);
-        if (lineText.length <= maxLen) return p;
+        if (lineText.length <= maxLen) {
+          console.log(`  [搜索] ✅ 包含匹配 p${p}: "${lineText}" (len=${lineText.length}≤${maxLen})`);
+          return p;
+        }
       }
       // 长标题的多核心词匹配
-      if (!isShortTitle && coreWords.length >= 2 && coreWords.every(w => lineText.includes(w)) && lineText.length <= 40) return p;
+      if (!isShortTitle && coreWords.length >= 2 && coreWords.every(w => lineText.includes(w)) && lineText.length <= 40) {
+        console.log(`  [搜索] ✅ 多核心匹配 p${p}: "${lineText}"`);
+        return p;
+      }
     }
   }
 
@@ -2929,12 +2946,41 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
       const topLines = lines.filter(l => isPageTop(l.y, allYs)).map(l => (l.text || '').trim());
       if (coreWords.length >= 2) {
         const textBlock = topLines.slice(0, 5).join(' ');
-        if (coreWords.every(w => textBlock.includes(w))) return p;
+        if (coreWords.every(w => textBlock.includes(w))) {
+          console.log(`  [搜索] ✅ 跨行匹配 p${p}`);
+          return p;
+        }
+      }
+    }
+  }
+
+  // 策略4：兜底搜索（短标题扫 ALL 行，不限于顶部 50%）
+  if (isShortTitle) {
+    for (let p = searchStart; p <= searchEnd; p++) {
+      if (tocPagesSet.has(p)) continue;
+      const lines = pageLines[p] || [];
+      if (!lines.length) continue;
+      for (const line of lines) {
+        const lineText = (line.text || '').trim();
+        if (!lineText) continue;
+        const lineClean = lineText.replace(/^[\s·、，,\-—]+|[\s·、，,\-—]+$/g, '');
+        if (lineClean === normTitle) {
+          console.log(`  [搜索] ✅ 兜底精确 p${p}: "${lineText}"`);
+          return p;
+        }
+        if (lineText.includes(normTitle)) {
+          const maxLen = normTitle.length + 8;
+          if (lineText.length <= maxLen) {
+            console.log(`  [搜索] ✅ 兜底包含 p${p}: "${lineText}" (len=${lineText.length}≤${maxLen})`);
+            return p;
+          }
+        }
       }
     }
   }
 
   // 找不到匹配，用上一个匹配页 + 1 估算
+  console.log(`  [搜索] ❌ 未找到 "${normTitle}", 返回 prev+1=${Math.min(prevPdfPage + 1, totalPages)}`);
   return Math.min(prevPdfPage + 1, totalPages);
 }
 
@@ -3165,6 +3211,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
       rawLines.push({ text: line.text.trim(), y: line.y, page: p });
     }
   }
+  console.log('[目录页提取] 原始行数:', rawLines.length);
+  // 打印目录页前 30 行原始文本，帮助调试
+  rawLines.slice(0, 30).forEach((l, i) => {
+    console.log(`  [TOC-raw ${i}] p${l.page} y${l.y}: "${l.text}"`);
+  });
 
   // 合并跨行条目（标题行末尾无页码，下一行为纯页码）
   const tocLines = [];
@@ -3385,6 +3436,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
 
   console.log('[目录页提取] ✅ 成功:', validUnits.length, '个单元');
+  // 打印每个单元和第一课的提取结果
+  validUnits.forEach((u, i) => {
+    const firstLesson = u.lessons.find(l => l.type === 'lesson');
+    console.log(`  [单元${i}] "${u.title}" page=${u.page}, 首课="${firstLesson?.title || '无'}" sp=${firstLesson?.startPage}`);
+  });
 
   // ★ 新思路核心：根据书签标题在正文中匹配，重新定位每个 lesson 的真实 PDF 页码
   // 不再用 offset 间接换算，直接搜索标题定位真实页，pageOffset=0
