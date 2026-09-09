@@ -1033,10 +1033,18 @@ def parse_existing_toc(toc_list, total_pages, rules):
 
     层级 1 → 单元；层级 2 → lesson（或栏目 group）；层级 3 → sublesson（挂在最近 L2 下）。
     页码即真实 PDF 页码，偏移 = 0。
+
+    容错处理：
+    - 若书签全部为 level 1（无层级结构），则全部作为同一单元的 lesson
+    - 若某单元下无 lesson，将其首个条目作为 lesson 保底，避免单元被丢弃
+    - 不再按 group 关键词过滤，确保所有书签都能展示
     """
     units = []
     cur_unit = None
     cur_l2 = None
+
+    # 统计最大层级，判断是否有层级结构
+    max_level = max((e[0] for e in toc_list if len(e) >= 3), default=1)
 
     for entry in toc_list:
         if len(entry) < 3:
@@ -1055,13 +1063,8 @@ def parse_existing_toc(toc_list, total_pages, rules):
             if cur_unit is None:
                 cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
                 units.append(cur_unit)
-            is_group = any(kw in title for kw in rules['group_kws'])
-            if is_group:
-                cur_l2 = None
-                cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': page})
-            else:
-                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
-                cur_unit['lessons'].append(cur_l2)
+            cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+            cur_unit['lessons'].append(cur_l2)
         else:  # level >= 3
             if cur_l2 is not None:
                 cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': page})
@@ -1069,8 +1072,25 @@ def parse_existing_toc(toc_list, total_pages, rules):
                 # 无 L2 父 → 当作独立 lesson
                 cur_unit['lessons'].append({'title': title, 'type': 'lesson', 'startPage': page, 'children': []})
 
+    # 容错：若书签全部为 level 1，将它们合并为一个"全书目录"单元下的 lesson
+    if max_level == 1 and len(units) > 1:
+        merged = {'title': '全书目录', 'page': units[0]['page'], 'lessons': []}
+        for u in units:
+            merged['lessons'].append({
+                'title': u['title'], 'type': 'lesson',
+                'startPage': u['page'], 'children': []
+            })
+        units = [merged]
+
+    # 容错：若某单元下无 lesson，将单元本身作为唯一 lesson 保底
+    for u in units:
+        if not any(l['type'] == 'lesson' for l in u['lessons']):
+            u['lessons'].append({
+                'title': u['title'], 'type': 'lesson',
+                'startPage': u['page'], 'children': []
+            })
+
     _compute_endpages_v2(units, total_pages)
-    units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
 
     return {'units': units, 'pageOffset': 0, 'totalPages': total_pages, 'method': 'bookmark'}
 
