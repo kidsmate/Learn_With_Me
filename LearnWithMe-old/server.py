@@ -203,10 +203,24 @@ def _find_lessons_in_body(page_lines, skip_pages, rules, units):
         if unit_idx < 0:
             continue
 
-        page_lines_sorted = sorted(page_lines[p], key=lambda l: -l['y'])
+        page_all_lines = page_lines[p]
+        if not page_all_lines:
+            continue
+        # ★ 页面位置过滤：课文标题在页面顶部，正文在中下部
+        # 计算本页所有行的 y 范围，只接受位于顶部 40% 的行
+        ys = [l['y'] for l in page_all_lines]
+        y_min, y_max = min(ys), max(ys)
+        y_range = y_max - y_min if y_max > y_min else 1
+        # y 越小越靠上；阈值 = y_min + 40% * range
+        y_threshold = y_min + y_range * 0.40
+
+        page_lines_sorted = sorted(page_all_lines, key=lambda l: -l['y'])
         for line in page_lines_sorted:
             text = line['text'].strip()
             if not text:
+                continue
+            # ★ 位置过滤：只接受页面顶部的行（y <= 阈值）
+            if line['y'] > y_threshold:
                 continue
             # 跳过单元标题本身
             if _is_unit_title(text, rules):
@@ -247,7 +261,17 @@ BODY_MARKERS = [
     '（1）', '（2）', '（3）', '（4）', '（5）',
     '①', '②', '③', '④', '⑤',
     '甲', '乙', '丙', '丁',
+    '给下列', '给加点', '注音', '解释下列', '翻译下列',
+    '用现代汉语', '用原文', '用自己', '用简洁',
+    '读读写写', '读一读', '写一写', '背一背', '记一记',
+    '预习', '复习', '巩固', '拓展', '提升',
 ]
+# 指令动词开头：正文/习题常以动词开头，课文标题不会
+INSTRUCTION_VERBS = ['给', '读', '写', '看', '听', '说', '想', '做', '用', '选', '填', '答', '背', '记', '抄', '画', '圈', '标', '注']
+# 谓语动词/助词：课文标题是名词短语，不含这些；正文句子含这些
+SENTENCE_VERBS = ['是', '了', '着', '过', '有', '在', '爱', '喜欢', '要', '会', '能', '可以', '应该', '必须', '叫', '叫做', '称为', '属于', '包括', '表示']
+# 程度副词/句末语气词：出现在句子中，不出现在课文标题中
+SENTENCE_PARTICLES = ['很', '真', '太', '非常', '十分', '极其', '格外', '呢', '吧', '啊', '呀', '吗', '嘛']
 # 句末标点：课文标题不会以这些结尾
 SENTENCE_END = '。！？.!?；;：:'
 
@@ -255,8 +279,8 @@ SENTENCE_END = '。！？.!?；;：:'
 def _is_valid_lesson_title(text, rules=None):
     """严格判定一行是否为合法的课文标题（排除正文/习题）。
 
-    课文标题特征：短、不以句末标点结尾、不含正文特征词。
-    正文/习题特征：长句、以问号/句号结尾、含"下列/如图/证明"等。
+    课文标题特征：短、名词短语、不以句末标点结尾、不含正文特征词、不是指令句、不含谓语动词。
+    正文/习题特征：长句、以问号/句号结尾、含"下列/如图/证明"等、以动词开头、含"是/了/着"等谓语。
     """
     text = text.strip()
     if not text or len(text) > 30:
@@ -272,10 +296,27 @@ def _is_valid_lesson_title(text, rules=None):
     m = re.match(r'^(\d+\*?)\s*[.．、]?\s*(.+)', text)
     if m:
         title_part = m.group(2).strip()
-        # 标题部分不应包含逗号/句号（正文句子才有）
-        if any(c in title_part for c in '，。、；'):
-            # 例外：作者名用 / 分隔，如 "春 / 朱自清"
-            if '/' not in title_part:
+    else:
+        title_part = text
+
+    # 标题部分不应包含逗号/句号（正文句子才有）
+    # 例外1：作者名用 / 分隔，如 "春 / 朱自清"
+    # 例外2：栏目名（写作/综合性学习/名著导读等）可含逗号，如 "写作 热爱生活，热爱写作"
+    is_group_title = any(text.startswith(kw) or kw in text[:10] for kw in (rules or SUBJECT_RULES['chinese'])['group_kws'])
+    if any(c in title_part for c in '，。、；'):
+        if '/' not in title_part and not is_group_title:
+            return False
+    # 标题部分不应以指令动词开头（如 "1 给加点字注音"）
+    # 例外：栏目名以"写作/阅读"等开头是合法的
+    if title_part and title_part[0] in INSTRUCTION_VERBS and not is_group_title:
+        return False
+    # ★ 课文标题是名词短语，不应含谓语动词/助词（如 "2 济南的冬天是温晴的"）
+    # 也不应含程度副词/语气词（如 "2 济南的冬天很美"）
+    # 例外1：带作者名的标题 "春 / 朱自清" 中，作者名可能含这些字
+    # 例外2：栏目名（写作/名著导读等）可能含动词，如 "写作 热爱生活"
+    if '/' not in title_part and not is_group_title:
+        for word in SENTENCE_VERBS + SENTENCE_PARTICLES:
+            if word in title_part:
                 return False
     return True
 
@@ -388,11 +429,36 @@ def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
 
     返回 units 结构，或 None（目录页无法解析）。
     """
-    # 收集目录页所有行
-    toc_lines = []
+    # 收集目录页所有行（保留 y 坐标用于跨行合并）
+    raw_lines = []
     for p in sorted(toc_pages):
         for line in sorted(page_lines.get(p, []), key=lambda l: -l['y']):
-            toc_lines.append(line['text'].strip())
+            raw_lines.append(line['text'].strip())
+
+    # 预处理：合并跨行条目。如果一行末尾不是页码，且下一行是纯页码，
+    # 则将下一行的页码合并到当前行（PDF 文本提取可能把标题和页码拆成两行）
+    toc_lines = []
+    i = 0
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        if not line:
+            i += 1
+            continue
+        # 检查当前行是否以页码结尾
+        ends_with_page = bool(re.search(r'\d{1,3}\s*$', line))
+        # 检查下一行是否是纯页码
+        next_is_page = (
+            i + 1 < len(raw_lines)
+            and re.match(r'^\d{1,3}$', raw_lines[i + 1].strip()) is not None
+        )
+        if not ends_with_page and next_is_page:
+            # 合并：标题 + 页码
+            merged = line + ' ... ' + raw_lines[i + 1]
+            toc_lines.append(merged)
+            i += 2
+        else:
+            toc_lines.append(line)
+            i += 1
 
     units = []
     cur_unit = None
@@ -402,8 +468,8 @@ def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
     # 条目格式："1 春 / 朱自清 ........ 2" 或 "1 春  2" 或 "第一单元  1"
     entry_re = re.compile(r'^(.+?)[\s\.·…\-—]+(\d{1,3})\s*$')
 
-    for raw in toc_lines:
-        text = raw.strip()
+    for text in toc_lines:
+        text = text.strip()
         if not text or len(text) > 60:
             continue
 
@@ -582,13 +648,25 @@ def extract_toc_with_fitz(pdf_bytes):
     # 正文字号 = 出现次数最多的字号
     body_font = float(max(font_count.items(), key=lambda x: x[1])[0])
 
-    # 标题行 = 字号严格大于正文，不在跳过页，不是页眉页脚
+    # ★ 预计算每页的 y 阈值（页面上半部分），用于过滤正文
+    # 课文标题在页面顶部，正文在中下部
+    page_y_threshold = {}
+    for p, lines in page_lines.items():
+        if not lines:
+            continue
+        ys = [l['y'] for l in lines]
+        y_min, y_max = min(ys), max(ys)
+        y_range = y_max - y_min if y_max > y_min else 1
+        page_y_threshold[p] = y_min + y_range * 0.50  # 上半部分
+
+    # 标题行 = 字号严格大于正文，不在跳过页，不是页眉页脚，且在页面上半部分
     title_lines = [
         l for p, lines in page_lines.items()
         for l in lines
         if l['fontsize'] > body_font + 0.5
         and p not in skip_pages
         and not _is_running_header(text_pages, l['text'], total_pages)
+        and l['y'] <= page_y_threshold.get(p, float('inf'))
     ]
     # 按页码、y 坐标排序（先按页，再按 y 从上到下，即降序）
     title_lines.sort(key=lambda l: (l['page'], -l['y']))
