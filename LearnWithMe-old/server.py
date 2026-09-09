@@ -563,8 +563,6 @@ def _find_toc_pages(page_lines, rules, total_pages):
     for p in range(start_page, end_page + 1):
         lines = page_lines.get(p, [])
         if not lines:
-            # 空白页也可能是目录页的一部分（如目录跨页时的空白），
-            # 但如果前面已经有目录页且当前页完全空白，可能是目录结束
             if toc_pages:
                 break
             continue
@@ -588,10 +586,16 @@ def _find_toc_pages(page_lines, rules, total_pages):
         # 判定是否为目录页
         is_toc = has_toc_title or (unit_count >= 1 and numbered_entries >= 2) or numbered_entries >= 4
 
+        # 调试：打印每页检测结果
+        print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, unit_count={unit_count}, numbered_entries={numbered_entries}, is_toc={is_toc}", flush=True)
+        if not is_toc and p <= start_page + 1:
+            # 打印前2页的内容帮助诊断
+            preview = text_all[:300].replace('\n', ' | ')
+            print(f"[API]     内容预览: {preview}", flush=True)
+
         if is_toc:
             toc_pages.add(p)
         else:
-            # 非目录页 → 目录结束
             if toc_pages:
                 break
 
