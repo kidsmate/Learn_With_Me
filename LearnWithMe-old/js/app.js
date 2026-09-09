@@ -2865,23 +2865,26 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
   if (normTitle.includes('/')) normTitle = normTitle.split('/')[0].trim();
   // 去掉首尾标点空白
   normTitle = normTitle.replace(/^[\s·、，,\-—]+|[\s·、，,\-—]+$/g, '');
-  if (!normTitle || normTitle.length < 2) return prevPdfPage;
+  if (!normTitle || normTitle.length === 0) return prevPdfPage;
 
-  // 拆出核心词（用于包含匹配）
-  const coreWords = normTitle.split(/[\s·、，,/]+/).filter(w => w.length >= 2);
+  // 拆出核心词（用于包含匹配），单字标题保留为 coreWords
+  const coreWords = normTitle.split(/[\s·、，,/]+/).filter(w => w.length >= 1);
   if (coreWords.length === 0) coreWords.push(normTitle);
+
+  // 单字/双字标题专用：短标题匹配要更精准，避免误匹配正文
+  const isShortTitle = normTitle.length <= 2;
 
   const searchStart = Math.max(searchStartPage, prevPdfPage);
   const searchEnd = Math.min(totalPages, searchStart + 200);
 
-  // 判断行是否在页面顶部 40% 区域
+  // 判断行是否在页面顶部区域（放宽到 50%，有些大字号标题 y 偏下）
   function isPageTop(lineY, allYs) {
     if (!allYs || allYs.length === 0) return true;
     const yMin = Math.min(...allYs);
     const yMax = Math.max(...allYs);
     const yRange = (yMax > yMin) ? (yMax - yMin) : 1;
     // PDF 坐标 y 越大越靠上，顶部 = y 接近 yMax
-    return lineY >= (yMin + yRange * 0.40);
+    return lineY >= (yMin + yRange * 0.50);
   }
 
   // 策略1+2：精确匹配 + 包含匹配
@@ -2904,23 +2907,30 @@ function findLessonPdfPageByTitle(pageLines, title, tocPagesSet, searchStartPage
         const rest = lineText.slice(m2[0].length).trim();
         if (rest === normTitle) return p;
       }
-      // 包含匹配：行包含完整标题核心词
-      if (lineText.includes(normTitle) && lineText.length <= normTitle.length + 20) return p;
-      // 行包含所有核心词
-      if (coreWords.length >= 2 && coreWords.every(w => lineText.includes(w)) && lineText.length <= 40) return p;
+      // 包含匹配：行包含完整标题，且行长度限制（避免匹配正文长句）
+      if (lineText.includes(normTitle)) {
+        // 短标题更严格：行长度不应超过 normTitle + 5（单字标题匹配 "春 朱自清" 这种）
+        // 长标题宽松：normTitle.length + 20
+        const maxLen = isShortTitle ? (normTitle.length + 8) : (normTitle.length + 20);
+        if (lineText.length <= maxLen) return p;
+      }
+      // 长标题的多核心词匹配
+      if (!isShortTitle && coreWords.length >= 2 && coreWords.every(w => lineText.includes(w)) && lineText.length <= 40) return p;
     }
   }
 
-  // 策略3：跨行匹配（标题拆词后，在页面顶部连续多行出现）
-  for (let p = searchStart; p <= searchEnd; p++) {
-    if (tocPagesSet.has(p)) continue;
-    const lines = pageLines[p] || [];
-    if (!lines.length) continue;
-    const allYs = lines.map(l => l.y);
-    const topLines = lines.filter(l => isPageTop(l.y, allYs)).map(l => (l.text || '').trim());
-    if (coreWords.length >= 2) {
-      const textBlock = topLines.slice(0, 5).join(' ');
-      if (coreWords.every(w => textBlock.includes(w))) return p;
+  // 策略3：跨行匹配（仅长标题用，短标题跨行基本不存在）
+  if (!isShortTitle) {
+    for (let p = searchStart; p <= searchEnd; p++) {
+      if (tocPagesSet.has(p)) continue;
+      const lines = pageLines[p] || [];
+      if (!lines.length) continue;
+      const allYs = lines.map(l => l.y);
+      const topLines = lines.filter(l => isPageTop(l.y, allYs)).map(l => (l.text || '').trim());
+      if (coreWords.length >= 2) {
+        const textBlock = topLines.slice(0, 5).join(' ');
+        if (coreWords.every(w => textBlock.includes(w))) return p;
+      }
     }
   }
 

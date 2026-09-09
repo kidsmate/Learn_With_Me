@@ -315,7 +315,7 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
     2. 包含匹配：页面顶部某行包含标题核心词
     3. 跨行匹配：标题拆词后，在页面顶部多行连续出现
 
-    只扫描页面顶部（前 40% 区域），避免误匹配正文引用。
+    只扫描页面顶部（前 50% 区域，大字号标题 y 可能偏下），避免误匹配正文引用。
     搜索范围：从上一个匹配页开始往后扫，限制在合理窗口内（≤200页）。
     """
     # 标题预处理：去掉编号前缀（"1 春" → "春"）、作者（"春 / 朱自清" → "春"）
@@ -330,13 +330,16 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
         norm_title = norm_title.split('/')[0].strip()
     # 去掉首尾标点空白
     norm_title = re.sub(r'^[\s·、，,]+|[\s·、，,]+$', '', norm_title)
-    if not norm_title or len(norm_title) < 2:
+    if not norm_title or len(norm_title) == 0:
         return prev_pdf_page  # 标题过短，无法搜索
 
-    # 拆出核心词（用于包含匹配），去掉常见虚词
-    core_words = [w for w in re.split(r'[\s·、，,/]+', norm_title) if len(w) >= 2]
+    # 拆出核心词（用于包含匹配），单字标题保留
+    core_words = [w for w in re.split(r'[\s·、，,/]+', norm_title) if len(w) >= 1]
     if not core_words:
         core_words = [norm_title]
+
+    # 单字/双字标题专用：短标题匹配要更精准，避免误匹配正文
+    is_short_title = len(norm_title) <= 2
 
     toc_set = set(toc_pages)
     search_start = max(start_search_page, prev_pdf_page)
@@ -344,14 +347,14 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
     search_end = min(total_pages, search_start + 200)
 
     def _is_page_top(line_y, all_ys):
-        """判断行是否在页面顶部 40% 区域。"""
+        """判断行是否在页面顶部区域（放宽到 50%，有些大字号标题 y 偏下）。"""
         if not all_ys:
             return True
         y_min = min(all_ys)
         y_max = max(all_ys)
         y_range = y_max - y_min if y_max > y_min else 1
         # PDF 坐标 y 越大越靠上，顶部 = y 接近 y_max
-        return line_y >= (y_min + y_range * 0.40)
+        return line_y >= (y_min + y_range * 0.50)
 
     for p in range(search_start, search_end + 1):
         if p in toc_set:
@@ -377,27 +380,32 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
                 rest = line_text[m2.end():].strip()
                 if rest == norm_title:
                     return p
-            # 策略2：包含匹配（行包含完整标题核心词）
-            if norm_title in line_text and len(line_text) <= len(norm_title) + 20:
-                return p
-            # 行包含所有核心词
-            if len(core_words) >= 2 and all(w in line_text for w in core_words) and len(line_text) <= 40:
+            # 策略2：包含匹配（行包含完整标题，且行长度限制避免匹配正文长句）
+            if norm_title in line_text:
+                # 短标题更严格：行长度不应超过 norm_title + 8（匹配 "春 朱自清" 这种）
+                # 长标题宽松：norm_title + 20
+                max_len = (len(norm_title) + 8) if is_short_title else (len(norm_title) + 20)
+                if len(line_text) <= max_len:
+                    return p
+            # 长标题的多核心词匹配
+            if not is_short_title and len(core_words) >= 2 and all(w in line_text for w in core_words) and len(line_text) <= 40:
                 return p
 
-    # 跨行匹配：标题拆词后，在页面顶部连续多行出现
-    for p in range(search_start, search_end + 1):
-        if p in toc_set:
-            continue
-        lines = page_lines.get(p, [])
-        if not lines:
-            continue
-        all_ys = [l['y'] for l in lines]
-        top_lines = [l['text'].strip() for l in lines if _is_page_top(l['y'], all_ys)]
-        # 标题所有核心词都出现在顶部连续的几行中
-        if len(core_words) >= 2:
-            text_block = ' '.join(top_lines[:5])
-            if all(w in text_block for w in core_words):
-                return p
+    # 跨行匹配：仅长标题用（短标题跨行基本不存在）
+    if not is_short_title:
+        for p in range(search_start, search_end + 1):
+            if p in toc_set:
+                continue
+            lines = page_lines.get(p, [])
+            if not lines:
+                continue
+            all_ys = [l['y'] for l in lines]
+            top_lines = [l['text'].strip() for l in lines if _is_page_top(l['y'], all_ys)]
+            # 标题所有核心词都出现在顶部连续的几行中
+            if len(core_words) >= 2:
+                text_block = ' '.join(top_lines[:5])
+                if all(w in text_block for w in core_words):
+                    return p
 
     # 找不到匹配，用上一个匹配页 + 1 估算
     return min(prev_pdf_page + 1, total_pages)
