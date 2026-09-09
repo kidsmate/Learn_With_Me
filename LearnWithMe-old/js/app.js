@@ -583,8 +583,8 @@ function openLearnPage(subj, point) {
   // 教材内容（从上传的 PDF 关联）
   renderLearnTextbook(subj, point);
 
-  // 教学视频
-  renderLearnVideo(content.videoKeywords || point.title);
+  // 教学视频（含智慧中小学资源）
+  renderLearnVideo(content.videoKeywords || point.title, subj, point);
 
   // 中考真题：基础练习 + 历年广东省各地区中考真题
   const exs = content.exercises || [];
@@ -1151,16 +1151,78 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-function renderLearnVideo(keywords) {
+function renderLearnVideo(keywords, subj, point) {
   const encoded = encodeURIComponent(keywords);
   const bilibiliUrl = `https://search.bilibili.com/all?keyword=${encoded}`;
+
+  // ===== 智慧中小学 (国家中小学智慧教育平台) 深度链接 =====
+  // 平台地址：https://www.zxx.edu.cn/
+  // 课程教学资源搜索 URL 模式
+  const zxxBase = 'https://www.zxx.edu.cn';
+  // 学科映射到智慧中小学的 tag
+  const zxxSubjectMap = {
+    'chinese': '语文', 'math': '数学', 'english': '英语',
+    'physics': '物理', 'chemistry': '化学',
+    'history': '历史', 'morality': '道德与法治',
+    'geography': '地理', 'biology': '生物'
+  };
+  const zxxSubjectName = zxxSubjectMap[subj.id] || subj.name;
+  // 从 point.title 提取课文标题（去掉作者等信息）
+  // 例如 "《春》朱自清 — 散文赏析与修辞手法" → "春"
+  let lessonTitle = point.title.replace(/^《/, '').replace(/[》].*/, '').split(/[\s—–-]/)[0].trim();
+  if (!lessonTitle) lessonTitle = point.title;
+  // 智慧中小学搜索 URL
+  const zxxSearchKeyword = encodeURIComponent(zxxSubjectName + ' ' + lessonTitle);
+  const zxxVideoUrl = `${zxxBase}/syncResource?tagId=&keyword=${zxxSearchKeyword}`;
+  // 智慧中小学课程教学入口
+  const zxxCourseUrl = `${zxxBase}/tchMaterial?tagId=&keyword=${zxxSearchKeyword}`;
+
+  // 学段映射（初中 → 七/八/九年级）
+  const gradeLevel = '初中';
+
   document.getElementById('learnVideo').innerHTML = `
     <div class="learn-section-title">🎬 教学视频</div>
-    <div class="video-card">
+
+    <!-- 智慧中小学资源 -->
+    <div class="video-card zxx-card">
       <div class="video-search">
-        <div class="video-search-icon">🔍</div>
+        <div class="video-search-icon">🏫</div>
         <div class="video-search-text">
-          <div style="font-weight:600;margin-bottom:4px;">在 B 站搜索教学视频</div>
+          <div style="font-weight:600;margin-bottom:4px;">国家中小学智慧教育平台</div>
+          <div style="font-size:13px;color:var(--text-light);">学科：${zxxSubjectName} ｜ 知识点：${escapeHtml(lessonTitle)}</div>
+        </div>
+      </div>
+      <div class="zxx-resource-grid">
+        <a href="${zxxVideoUrl}" target="_blank" class="zxx-resource-link">
+          <div class="zxx-resource-item">
+            <div class="zxx-res-icon">🎬</div>
+            <div class="zxx-res-info">
+              <div class="zxx-res-title">视频教学资源</div>
+              <div class="zxx-res-desc">${zxxSubjectName}·${escapeHtml(lessonTitle)} 视频课程</div>
+            </div>
+          </div>
+        </a>
+        <a href="${zxxCourseUrl}" target="_blank" class="zxx-resource-link">
+          <div class="zxx-resource-item">
+            <div class="zxx-res-icon">📄</div>
+            <div class="zxx-res-info">
+              <div class="zxx-res-title">课件资源</div>
+              <div class="zxx-res-desc">${zxxSubjectName}·${escapeHtml(lessonTitle)} 课件教案</div>
+            </div>
+          </div>
+        </a>
+      </div>
+      <div class="zxx-tips">
+        <p>💡 点击上方资源卡片，可直接跳转到智慧中小学平台对应的<strong>${zxxSubjectName}·${escapeHtml(lessonTitle)}</strong>视频和课件页面。如页面为空，请在平台上手动筛选「${gradeLevel}」学段和「${zxxSubjectName}」学科。</p>
+      </div>
+    </div>
+
+    <!-- B 站视频搜索 -->
+    <div class="video-card" style="margin-top:16px;">
+      <div class="video-search">
+        <div class="video-search-icon">📺</div>
+        <div class="video-search-text">
+          <div style="font-weight:600;margin-bottom:4px;">B 站教学视频搜索</div>
           <div style="font-size:13px;color:var(--text-light);">关键词：${keywords}</div>
         </div>
         <a href="${bilibiliUrl}" target="_blank" class="btn-primary" style="text-decoration:none;">去搜索</a>
