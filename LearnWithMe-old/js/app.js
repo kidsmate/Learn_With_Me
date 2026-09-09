@@ -185,9 +185,13 @@ async function getPdfDoc(textbookId, arrayBuffer) {
 function init() {
   renderAll();
   setupEventListeners();
-  // 设置 PDF.js worker（本地化，支持 iPad/WKWebView 离线运行）
+  // 设置 PDF.js worker + cMap（本地化，支持 iPad/WKWebView 离线运行）
   if (window.pdfjsLib) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+    // ★ 关键：配置 CID 字体 cMap，否则 PDF.js 能渲染但提不到中文文本
+    // 人教版教材 PDF 用 CID 字体，必须有 cMap 才能 getTextContent()
+    pdfjsLib.GlobalWorkerOptions.cMapUrl = 'libs/cmaps_full/';
+    pdfjsLib.GlobalWorkerOptions.cMapPacked = true;
   }
 }
 
@@ -2114,90 +2118,133 @@ function handlePdfUpload(file) {
         document.getElementById('pdfProgressFill').style.width = (40 + (i / pdf.numPages) * 50) + '%';
       }
 
-      // 统一提取方案（离线优先，iPad/WKWebView 友好）：
-      //   前端 PDF 书签 → 字号提取 → 目录页解析 → 正则扫描
-      //   任一前端方案成功即结束；全部失败才尝试调用服务端 pymupdf（需电脑在线）
+      // ★ 关键诊断：PDF.js 能否提取到任何文本？
+      const totalExtractedChars = pageTexts.reduce((s, t) => s + t.length, 0);
+      console.log(`[诊断] PDF.js 文本提取: ${pdf.numPages}页, 共${totalExtractedChars}字符`);
+      // 检查前 5 页是否有文本
+      for (let i = 0; i < Math.min(5, pageTexts.length); i++) {
+        console.log(`[诊断]   第${i+1}页: ${pageTexts[i].length}字符, 前60字: "${pageTexts[i].slice(0, 60)}"`);
+      }
+      if (totalExtractedChars === 0) {
+        console.error('[诊断] ★★★ PDF.js 提取不到任何文本！CID字体问题或加密PDF');
+        document.getElementById('pdfStatus').textContent = 'PDF.js 无法提取文本（可能是 CID 字体或加密 PDF）';
+        document.getElementById('pdfProgressFill').style.width = '100%';
+        return;
+      }
+
+      // ★ 提取方案优先级（PDF.js 无 cMap 提不到 CID 字体文本，所以先试服务端 pymupdf）
+      //  1) 服务端 pymupdf（完美支持 CID 字体，首选）
+      //  2) PDF 内置书签（次选）
+      //  3) 前端目录页解析（PDF.js，需 cMap 配置才对中文有效）
+      //  4) 字号提取 → 正则扫描
       let units;
       let hadOutline = false;
+      let serverResult = null;
       const triedMethods = [];
 
-      // 1) PDF 内置书签（最准）
+      // ===== 1) 服务端 pymupdf（首选，处理 CID 字体完美）=====
       try {
-        const outline = await pdf.getOutline();
-        console.log('[目录解析] PDF 书签:', outline ? outline.length + ' 个顶级节点' : '无');
-        if (outline && outline.length > 0) {
-          hadOutline = true;
-          units = await extractUnitsFromOutline(pdf, outline, pdf.numPages);
-          triedMethods.push('outline');
-        }
-      } catch (e) {
-        console.warn('[目录解析] 获取书签失败:', e);
-      }
-      let hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
-
-      // 2) 仅解析目录页（不扫描正文，避免误识别）
-      if (!hasLessons) {
-        console.log('[目录解析] 尝试仅解析目录页...');
-        document.getElementById('pdfStatus').textContent = '正在解析目录页...';
-        const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
-        if (tocResult && tocResult.units && tocResult.units.length > 0) {
-          units = tocResult.units;
-          currentPdfData.pageOffset = tocResult.pageOffset || 0;
-          hasLessons = true;
-          triedMethods.push('toc-pages');
-          console.log('[目录解析] ✅ 目录页提取成功');
-        }
-      }
-
-      // 3) 字号提取
-      if (!hasLessons) {
-        console.log('[目录解析] 目录页提取无结果，尝试字号提取...');
-        document.getElementById('pdfStatus').textContent = '正在按字体大小提取目录...';
-        const fontResult = await extractTocByFontSize(pdf);
-        if (fontResult && fontResult.units && fontResult.units.length > 0) {
-          units = fontResult.units;
-          currentPdfData.pageOffset = fontResult.pageOffset || 0;
-          hasLessons = true;
-          triedMethods.push('font-size');
-          console.log('[目录解析] ✅ 字号提取成功');
-        }
-      }
-
-      // 4) 正则扫描
-      if (!hasLessons) {
-        console.log('[目录解析] 字号提取无结果，使用正则扫描');
-        const extracted = autoExtractToc(pageTexts, pdf.numPages, fullText);
-        if (extracted && extracted.units && extracted.units.length > 0) {
-          units = extracted.units;
-          currentPdfData.pageOffset = extracted.pageOffset || 0;
-          hasLessons = true;
-          triedMethods.push('regex');
-        }
-      }
-      if (hasLessons && !hadOutline) {
-        // ★ 新方案：使用 toc-pages 方法时，已通过正文标题匹配定位真实页码，
-        // pageOffset 必须保持 0，跳过 detectPageOffset 调用（它是页码从 96 起跳错误的根因）
-        const usedTocPages = triedMethods.includes('toc-pages');
-        if (!usedTocPages) {
-          currentPdfData.pageOffset = currentPdfData.pageOffset || detectPageOffset(pageTexts, units) || 0;
-        } else {
-          currentPdfData.pageOffset = 0;
-        }
-      }
-
-      // 5) 前端全部失败 → 调用服务端 pymupdf（需电脑在线，离线时跳过）
-      let serverResult = null;
-      if (!hasLessons) {
-        console.log('[目录解析] 前端提取均无结果，尝试服务端 pymupdf...');
-        document.getElementById('pdfStatus').textContent = '正在调用服务端提取...';
+        console.log('[目录解析] ★ 优先尝试服务端 pymupdf...');
+        document.getElementById('pdfStatus').textContent = '正在上传到服务端解析...';
         serverResult = await extractTocFromServer(arrayBuffer);
-        if (serverResult) {
+        if (serverResult && serverResult.units && serverResult.units.length > 0) {
           units = serverResult.units;
           currentPdfData.pageOffset = serverResult.pageOffset || 0;
           hadOutline = serverResult.method === 'bookmark';
-          hasLessons = true;
           triedMethods.push('server-' + serverResult.method);
-          console.log('[目录解析] ✅ 服务端提取成功，方法:', serverResult.method);
+          console.log(`[目录解析] ✅ 服务端提取成功: ${units.length} 单元, pageOffset=${currentPdfData.pageOffset}`);
+        }
+      } catch (e) {
+        console.warn('[目录解析] 服务端异常:', e.message);
+        serverResult = null;
+      }
+      let hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
+
+      // ===== 2) PDF 内置书签 =====
+      if (!hasLessons) {
+        try {
+          const outline = await pdf.getOutline();
+          console.log('[目录解析] PDF 书签:', outline ? outline.length + ' 个顶级节点' : '无');
+          if (outline && outline.length > 0) {
+            const dumpOutline = (nodes, depth = 0) => {
+              for (const n of nodes) {
+                console.log(`[书签dump] ${'  '.repeat(depth)}"${(n.title||'').trim()}" ${n.items ? '('+n.items.length+'子)' : ''}`);
+                if (n.items && depth < 2) dumpOutline(n.items, depth + 1);
+              }
+            };
+            dumpOutline(outline.slice(0, 15));
+            hadOutline = true;
+            units = await extractUnitsFromOutline(pdf, outline, pdf.numPages);
+            console.log(`[目录解析] 书签提取结果: ${units ? units.length : 0} 个单元`);
+            triedMethods.push('outline');
+            hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
+          }
+        } catch (e) {
+          console.warn('[目录解析] 获取书签失败:', e);
+        }
+      }
+
+      // ===== 3) 前端目录页解析 =====
+      if (!hasLessons) {
+        console.log('[目录解析] 尝试前端目录页解析...');
+        document.getElementById('pdfStatus').textContent = '正在解析目录页...';
+        try {
+          const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
+          console.log(`[目录解析] 目录页结果: ${tocResult ? (tocResult.units ? tocResult.units.length + ' 单元' : '无units') : 'null'}`);
+          if (tocResult && tocResult.units && tocResult.units.length > 0) {
+            units = tocResult.units;
+            currentPdfData.pageOffset = tocResult.pageOffset || 0;
+            hasLessons = true;
+            triedMethods.push('toc-pages');
+            console.log('[目录解析] ✅ 目录页提取成功');
+          }
+        } catch (e) {
+          console.error('[目录解析] 目录页提取异常:', e);
+        }
+      }
+
+      // ===== 4) 字号提取 =====
+      if (!hasLessons) {
+        console.log('[目录解析] 目录页提取无结果，尝试字号提取...');
+        document.getElementById('pdfStatus').textContent = '正在按字体大小提取目录...';
+        try {
+          const fontResult = await extractTocByFontSize(pdf);
+          if (fontResult && fontResult.units && fontResult.units.length > 0) {
+            units = fontResult.units;
+            currentPdfData.pageOffset = fontResult.pageOffset || 0;
+            hasLessons = true;
+            triedMethods.push('font-size');
+            console.log('[目录解析] ✅ 字号提取成功');
+          }
+        } catch (e) {
+          console.warn('[目录解析] 字号提取异常:', e.message);
+        }
+      }
+
+      // ===== 5) 正则扫描 =====
+      if (!hasLessons) {
+        console.log('[目录解析] 字号提取无结果，使用正则扫描');
+        try {
+          const extracted = autoExtractToc(pageTexts, pdf.numPages, fullText);
+          if (extracted && extracted.units && extracted.units.length > 0) {
+            units = extracted.units;
+            currentPdfData.pageOffset = extracted.pageOffset || 0;
+            hasLessons = true;
+            triedMethods.push('regex');
+          }
+        } catch (e) {
+          console.warn('[目录解析] 正则扫描异常:', e.message);
+        }
+      }
+
+      if (hasLessons && !hadOutline) {
+        // 非 toc-pages 方法才需要计算 offset
+        const usedTocPages = triedMethods.includes('toc-pages');
+        const usedServer = triedMethods.some(m => m.startsWith('server-'));
+        if (!usedTocPages && !usedServer) {
+          currentPdfData.pageOffset = currentPdfData.pageOffset || detectPageOffset(pageTexts, units) || 0;
+        } else {
+          currentPdfData.pageOffset = 0;
         }
       }
 
