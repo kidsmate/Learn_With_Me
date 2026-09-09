@@ -79,9 +79,9 @@ async function getPdfDoc(textbookId, arrayBuffer) {
 function init() {
   renderAll();
   setupEventListeners();
-  // 设置 PDF.js worker
+  // 设置 PDF.js worker（本地化，支持 iPad/WKWebView 离线运行）
   if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
   }
 }
 
@@ -1793,69 +1793,89 @@ async function tocAutoExtract(textbookId) {
       return;
     }
 
-    // 优先：调用服务端 pymupdf API
-    showToast('正在调用服务端提取（pymupdf）...');
-    const serverResult = await extractTocFromServer(arrayBuffer);
-    let units;
-    let hadOutline = false;
-    if (serverResult) {
-      units = serverResult.units;
-      t.pageOffset = serverResult.pageOffset || 0;
-      hadOutline = serverResult.method === 'bookmark';
-      console.log('[目录解析] ✅ 服务端提取成功');
+    // 优先：前端 PDF.js 提取（离线可用，iPad/WKWebView 友好）
+    showToast('正在前端提取目录（PDF.js）...');
+    const data = new Uint8Array(arrayBuffer.slice(0));
+    const pdf = await pdfjsLib.getDocument({ data }).promise;
+    const pageTexts = [];
+    let fullText = '';
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const lines = [];
+      const yMap = {};
+      for (const item of textContent.items) {
+        const y = Math.round(item.transform[5]);
+        let lineKey = y;
+        for (const key of Object.keys(yMap)) {
+          if (Math.abs(parseInt(key) - y) <= 3) { lineKey = parseInt(key); break; }
+        }
+        if (!yMap[lineKey]) yMap[lineKey] = [];
+        yMap[lineKey].push({ x: item.transform[4], str: item.str });
+      }
+      const sortedYs = Object.keys(yMap).map(Number).sort((a, b) => b - a);
+      for (const y of sortedYs) {
+        const line = yMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('').trim();
+        if (line) lines.push(line);
+      }
+      pageTexts.push(lines.join('\n'));
+      fullText += lines.join('\n') + '\n\n';
     }
 
-    // 服务端不可用 → 回退前端提取
-    if (!units || units.length === 0) {
-      const data = new Uint8Array(arrayBuffer.slice(0));
-      const pdf = await pdfjsLib.getDocument({ data }).promise;
-      const pageTexts = [];
-      let fullText = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const lines = [];
-        const yMap = {};
-        for (const item of textContent.items) {
-          const y = Math.round(item.transform[5]);
-          let lineKey = y;
-          for (const key of Object.keys(yMap)) {
-            if (Math.abs(parseInt(key) - y) <= 3) { lineKey = parseInt(key); break; }
-          }
-          if (!yMap[lineKey]) yMap[lineKey] = [];
-          yMap[lineKey].push({ x: item.transform[4], str: item.str });
-        }
-        const sortedYs = Object.keys(yMap).map(Number).sort((a, b) => b - a);
-        for (const y of sortedYs) {
-          const line = yMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('').trim();
-          if (line) lines.push(line);
-        }
-        pageTexts.push(lines.join('\n'));
-        fullText += lines.join('\n') + '\n\n';
-      }
-      try {
-        const outline = await pdf.getOutline();
-        if (outline && outline.length > 0) {
-          hadOutline = true;
-          units = await extractUnitsFromOutline(pdf, outline, pdf.numPages);
-        }
-      } catch (e) {}
-      let hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
+    let units;
+    let hadOutline = false;
+    let hasLessons = false;
 
-      if (!hasLessons) {
-        const fontResult = await extractTocByFontSize(pdf);
-        if (fontResult && fontResult.units && fontResult.units.length > 0) {
-          units = fontResult.units;
-          t.pageOffset = fontResult.pageOffset || 0;
-          hasLessons = true;
-        }
+    // 1) PDF 内置书签
+    try {
+      const outline = await pdf.getOutline();
+      if (outline && outline.length > 0) {
+        hadOutline = true;
+        units = await extractUnitsFromOutline(pdf, outline, pdf.numPages);
+        hasLessons = units && units.some(u => u.lessons.some(l => l.type === 'lesson'));
       }
-      if (!hasLessons) {
-        const extracted = autoExtractToc(pageTexts, pdf.numPages, fullText);
-        units = extracted && extracted.units;
-        t.pageOffset = (extracted && extracted.pageOffset) || 0;
-      } else if (!hadOutline) {
-        t.pageOffset = detectPageOffset(pageTexts, units) || 0;
+    } catch (e) {}
+
+    // 2) 目录页解析
+    if (!hasLessons) {
+      const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
+      if (tocResult && tocResult.units && tocResult.units.length > 0) {
+        units = tocResult.units;
+        t.pageOffset = tocResult.pageOffset || 0;
+        hasLessons = true;
+      }
+    }
+    // 3) 字号提取
+    if (!hasLessons) {
+      const fontResult = await extractTocByFontSize(pdf);
+      if (fontResult && fontResult.units && fontResult.units.length > 0) {
+        units = fontResult.units;
+        t.pageOffset = fontResult.pageOffset || 0;
+        hasLessons = true;
+      }
+    }
+    // 4) 正则扫描
+    if (!hasLessons) {
+      const extracted = autoExtractToc(pageTexts, pdf.numPages, fullText);
+      if (extracted && extracted.units) {
+        units = extracted.units;
+        t.pageOffset = extracted.pageOffset || 0;
+        hasLessons = units.some(u => u.lessons.some(l => l.type === 'lesson'));
+      }
+    }
+    if (hasLessons && !hadOutline) {
+      t.pageOffset = t.pageOffset || detectPageOffset(pageTexts, units) || 0;
+    }
+
+    // 5) 前端全部失败 → 调用服务端 pymupdf（需电脑在线）
+    if (!hasLessons) {
+      showToast('前端无结果，尝试服务端提取...');
+      const serverResult = await extractTocFromServer(arrayBuffer);
+      if (serverResult) {
+        units = serverResult.units;
+        t.pageOffset = serverResult.pageOffset || 0;
+        hadOutline = serverResult.method === 'bookmark';
+        hasLessons = true;
       }
     }
     t.units = units;
@@ -1939,68 +1959,86 @@ function handlePdfUpload(file) {
         document.getElementById('pdfProgressFill').style.width = (40 + (i / pdf.numPages) * 50) + '%';
       }
 
-      // 统一提取方案：服务端 pymupdf → PDF 书签 → 字号提取 → 正则扫描
+      // 统一提取方案（离线优先，iPad/WKWebView 友好）：
+      //   前端 PDF 书签 → 字号提取 → 目录页解析 → 正则扫描
+      //   任一前端方案成功即结束；全部失败才尝试调用服务端 pymupdf（需电脑在线）
       let units;
       let hadOutline = false;
+      const triedMethods = [];
 
-      // 优先：调用服务端 pymupdf API（最准确，和用户的 Python 程序一致）
-      document.getElementById('pdfStatus').textContent = '正在调用服务端提取目录（pymupdf）...';
-      const serverResult = await extractTocFromServer(arrayBuffer);
-      if (serverResult) {
-        units = serverResult.units;
-        currentPdfData.pageOffset = serverResult.pageOffset || 0;
-        hadOutline = serverResult.method === 'bookmark';
-        console.log('[目录解析] ✅ 服务端提取成功，方法:', serverResult.method);
+      // 1) PDF 内置书签（最准）
+      try {
+        const outline = await pdf.getOutline();
+        console.log('[目录解析] PDF 书签:', outline ? outline.length + ' 个顶级节点' : '无');
+        if (outline && outline.length > 0) {
+          hadOutline = true;
+          units = await extractUnitsFromOutline(pdf, outline, pdf.numPages);
+          triedMethods.push('outline');
+        }
+      } catch (e) {
+        console.warn('[目录解析] 获取书签失败:', e);
+      }
+      let hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
+
+      // 2) 仅解析目录页（不扫描正文，避免误识别）
+      if (!hasLessons) {
+        console.log('[目录解析] 尝试仅解析目录页...');
+        document.getElementById('pdfStatus').textContent = '正在解析目录页...';
+        const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
+        if (tocResult && tocResult.units && tocResult.units.length > 0) {
+          units = tocResult.units;
+          currentPdfData.pageOffset = tocResult.pageOffset || 0;
+          hasLessons = true;
+          triedMethods.push('toc-pages');
+          console.log('[目录解析] ✅ 目录页提取成功');
+        }
       }
 
-      // 服务端不可用 → 回退到前端提取
-      if (!units || units.length === 0) {
-        try {
-          const outline = await pdf.getOutline();
-          console.log('[目录解析] PDF 书签:', outline ? outline.length + ' 个顶级节点' : '无');
-          if (outline && outline.length > 0) {
-            hadOutline = true;
-            units = await extractUnitsFromOutline(pdf, outline, pdf.numPages);
-          }
-        } catch (e) {
-          console.warn('[目录解析] 获取书签失败:', e);
-        }
-        let hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
-
-        // 优先：仅解析目录页（不扫描正文，避免误识别）
-        if (!hasLessons) {
-          console.log('[目录解析] 尝试仅解析目录页...');
-          document.getElementById('pdfStatus').textContent = '正在解析目录页...';
-          const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
-          if (tocResult && tocResult.units && tocResult.units.length > 0) {
-            units = tocResult.units;
-            currentPdfData.pageOffset = tocResult.pageOffset || 0;
-            hasLessons = true;
-            console.log('[目录解析] ✅ 目录页提取成功');
-          }
-        }
-
-        if (!hasLessons) {
-          console.log('[目录解析] 目录页提取无结果，尝试字号提取...');
-          document.getElementById('pdfStatus').textContent = '正在按字体大小提取目录...';
-          const fontResult = await extractTocByFontSize(pdf);
-          if (fontResult && fontResult.units && fontResult.units.length > 0) {
-            units = fontResult.units;
-            currentPdfData.pageOffset = fontResult.pageOffset || 0;
-            hasLessons = true;
-            console.log('[目录解析] ✅ 字号提取成功');
-          }
-        }
-
-        if (!hasLessons) {
-          console.log('[目录解析] 字号提取无结果，使用正则扫描');
-          const extracted = autoExtractToc(pageTexts, pdf.numPages, fullText);
-          units = extracted && extracted.units;
-          currentPdfData.pageOffset = (extracted && extracted.pageOffset) || 0;
-        } else if (!hadOutline) {
-          currentPdfData.pageOffset = detectPageOffset(pageTexts, units) || 0;
+      // 3) 字号提取
+      if (!hasLessons) {
+        console.log('[目录解析] 目录页提取无结果，尝试字号提取...');
+        document.getElementById('pdfStatus').textContent = '正在按字体大小提取目录...';
+        const fontResult = await extractTocByFontSize(pdf);
+        if (fontResult && fontResult.units && fontResult.units.length > 0) {
+          units = fontResult.units;
+          currentPdfData.pageOffset = fontResult.pageOffset || 0;
+          hasLessons = true;
+          triedMethods.push('font-size');
+          console.log('[目录解析] ✅ 字号提取成功');
         }
       }
+
+      // 4) 正则扫描
+      if (!hasLessons) {
+        console.log('[目录解析] 字号提取无结果，使用正则扫描');
+        const extracted = autoExtractToc(pageTexts, pdf.numPages, fullText);
+        if (extracted && extracted.units && extracted.units.length > 0) {
+          units = extracted.units;
+          currentPdfData.pageOffset = extracted.pageOffset || 0;
+          hasLessons = true;
+          triedMethods.push('regex');
+        }
+      }
+      if (hasLessons && !hadOutline) {
+        currentPdfData.pageOffset = currentPdfData.pageOffset || detectPageOffset(pageTexts, units) || 0;
+      }
+
+      // 5) 前端全部失败 → 调用服务端 pymupdf（需电脑在线，离线时跳过）
+      let serverResult = null;
+      if (!hasLessons) {
+        console.log('[目录解析] 前端提取均无结果，尝试服务端 pymupdf...');
+        document.getElementById('pdfStatus').textContent = '正在调用服务端提取...';
+        serverResult = await extractTocFromServer(arrayBuffer);
+        if (serverResult) {
+          units = serverResult.units;
+          currentPdfData.pageOffset = serverResult.pageOffset || 0;
+          hadOutline = serverResult.method === 'bookmark';
+          hasLessons = true;
+          triedMethods.push('server-' + serverResult.method);
+          console.log('[目录解析] ✅ 服务端提取成功，方法:', serverResult.method);
+        }
+      }
+
       // 最终兜底
       if (!units || units.length === 0 || !units.some(u => u.lessons.some(l => l.type === 'lesson'))) {
         units = [{ title: '教材内容', lessons: [{ title: '教材全文', content: fullText, startPage: 1, endPage: pdf.numPages, type: 'lesson' }] }];
@@ -2025,7 +2063,8 @@ function handlePdfUpload(file) {
       currentPdfData.pageTexts = pageTexts;
 
       const totalLessons = units.reduce((s, u) => s + u.lessons.length, 0);
-      const methodLabel = serverResult ? serverResult.method : (hadOutline ? '书签' : '前端提取');
+      const methodLabel = serverResult ? ('服务端·' + serverResult.method)
+        : (triedMethods.length > 0 ? ('前端·' + triedMethods.join('+')) : (hadOutline ? '书签' : '前端提取'));
       document.getElementById('pdfStatus').textContent = `提取完成！识别到 ${units.length} 个单元、${totalLessons} 篇课文（${methodLabel}）`;
       document.getElementById('pdfProgressFill').style.width = '100%';
 
