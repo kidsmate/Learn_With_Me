@@ -1,0 +1,22 @@
+{
+  "name": "安冉的学习助手",
+  "short_name": "学习助手",
+  "description": "帮助孩子学习打卡的正向激励助手",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F5F6FA",
+  "theme_color": "#6C5CE7",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

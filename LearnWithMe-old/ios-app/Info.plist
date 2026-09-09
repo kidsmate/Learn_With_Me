@@ -28,16 +28,15 @@
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
 
-    <!-- ===== App Transport Security 例外：允许局域网 HTTP ===== -->
-    <!-- iOS 默认强制 HTTPS，访问 http://10.76.189.67:8080 会被拦截。
-         开发期关闭整个 ATS 最省事；发布上架前应改为 false，
-         然后为你的局域网 IP 段加 NSExceptionDomains（见下方注释示例）。 -->
+    <!-- ===== App Transport Security ===== -->
+    <!-- 本地模式加载 file:// 资源不受 ATS 限制；
+         但远程模式访问 http://局域网 IP 需要此例外。
+         发布上架前可改为 false 并用 NSExceptionDomains 白名单具体 IP。 -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
-        <!--
-        发布时更安全的写法：
+        <!-- 发布时更安全的写法（仅放行你的局域网 IP）：
         <key>NSAllowsArbitraryLoads</key>
         <false/>
         <key>NSExceptionDomains</key>
@@ -46,13 +45,15 @@
             <dict>
                 <key>NSExceptionAllowsInsecureHTTPLoads</key>
                 <true/>
-                <key>NSIncludesSubdomains</key>
-                <false/>
             </dict>
         </dict>
         -->
     </dict>
 
-    <!-- 应用图标：把 LearnWithMe-old/icons/icon-512.png 拖进 Assets.xcassets 的 AppIcon 即可 -->
+    <!-- 防止锁屏时 App 暂停（学习/视频场景更友好） -->
+    <key>UIRequiresFullScreen</key>
+    <false/>
+
+    <!-- 应用图标：把 www/icons/icon-512.png 拖进 Assets.xcassets 的 AppIcon 即可 -->
 </dict>
 </plist>
