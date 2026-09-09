@@ -421,89 +421,113 @@ def _detect_page_offset(page_num_lines, total_pages):
     return best_offset[0]
 
 
-def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
+def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_pages):
     """从目录页解析三级目录（最可靠的方式）。
 
     目录页通常列出 "第X单元"、"1 春 ........ 2"、"写作 ... 17" 等条目，
     后面的数字是课本印刷页码。本函数解析这些条目，加上 offset 得到 PDF 真实页码。
 
+    支持两种布局：
+    1. 单栏：页码在行末（"1 春 ........ 2"）
+    2. 双栏：页码在右栏独立文本块，通过 y 坐标与左栏标题配对
+
     返回 units 结构，或 None（目录页无法解析）。
     """
     # 收集目录页所有行（按 y 坐标从小到大排序 = 从上到下）
-    raw_lines = []
+    # 保留 y 坐标用于双栏布局页码配对
+    raw_lines = []  # [(text, y, page)]
     for p in sorted(toc_pages):
         for line in sorted(page_lines.get(p, []), key=lambda l: l['y']):
-            raw_lines.append(line['text'].strip())
+            raw_lines.append((line['text'].strip(), line['y'], p))
+
+    # 构建页码索引：每页的 [(y, page_number)]
+    page_num_index = {}  # page -> [(y, num)]
+    for p in toc_pages:
+        nums = []
+        for pn in page_num_lines.get(p, []):
+            try:
+                nums.append((pn['y'], int(pn['text'])))
+            except ValueError:
+                continue
+        nums.sort(key=lambda x: x[0])
+        page_num_index[p] = nums
+
+    def find_page_by_y(page, y):
+        """双栏布局：通过 y 坐标在右栏找对应页码。"""
+        nums = page_num_index.get(page, [])
+        if not nums:
+            return None
+        # 找 y 坐标最接近的页码（容差 15 点）
+        best = None
+        best_dist = 15.0
+        for ny, num in nums:
+            dist = abs(ny - y)
+            if dist < best_dist:
+                best_dist = dist
+                best = num
+        return best
 
     # 预处理：合并跨行条目。如果一行末尾不是页码，且下一行是纯页码，
     # 则将下一行的页码合并到当前行（PDF 文本提取可能把标题和页码拆成两行）
-    toc_lines = []
+    toc_lines = []  # [(text, y, page)]
     i = 0
     while i < len(raw_lines):
-        line = raw_lines[i]
-        if not line:
+        text, y, page = raw_lines[i]
+        if not text:
             i += 1
             continue
-        # 检查当前行是否以页码结尾
-        ends_with_page = bool(re.search(r'\d{1,3}\s*$', line))
-        # 检查下一行是否是纯页码
+        ends_with_page = bool(re.search(r'\d{1,3}\s*$', text))
         next_is_page = (
             i + 1 < len(raw_lines)
-            and re.match(r'^\d{1,3}$', raw_lines[i + 1].strip()) is not None
+            and re.match(r'^\d{1,3}$', raw_lines[i + 1][0].strip()) is not None
         )
         if not ends_with_page and next_is_page:
-            # 合并：标题 + 页码
-            merged = line + ' ... ' + raw_lines[i + 1]
-            toc_lines.append(merged)
+            merged = text + ' ... ' + raw_lines[i + 1][0]
+            toc_lines.append((merged, y, page))
             i += 2
         else:
-            toc_lines.append(line)
+            toc_lines.append((text, y, page))
             i += 1
 
     units = []
     cur_unit = None
     cur_l2 = None
 
-    # 调试：打印目录页原始行（帮助诊断格式问题）
-    print(f"[API] 目录页原始行数: {len(toc_lines)}")
+    print(f"[API] 目录页原始行数: {len(toc_lines)}", flush=True)
 
-    # 从每行末尾提取页码：找行中最后一个 1-3 位数字
-    # 标题 = 该数字之前的所有文本（去除末尾的点号/空格）
-    # 这种方式不依赖特定分隔符，兼容 "........"、空格、制表符等各种引导符
-    def extract_title_and_page(text):
-        """从目录行提取 (标题, 印刷页码)。页码是行末最后一个数字。"""
+    def extract_title_and_page(text, y, page):
+        """从目录行提取 (标题, 印刷页码)。
+        先尝试行末页码（单栏），失败则用 y 坐标在右栏找（双栏）。
+        """
         text = text.strip()
-        # 匹配行末的数字（前面可以有点号/空格等引导符）
         m = re.search(r'(\d{1,3})\s*$', text)
-        if not m:
-            return None, None
-        book_page = int(m.group(1))
-        # 标题 = 页码之前的文本，去除末尾的引导符（点号、空格、横线等）
-        title = text[:m.start()].strip()
-        title = re.sub(r'[\.·…\-—\s]+$', '', title).strip()
-        return title, book_page
+        if m:
+            book_page = int(m.group(1))
+            title = text[:m.start()].strip()
+            title = re.sub(r'[\.·…\-—\s]+$', '', title).strip()
+            return title, book_page
+        book_page = find_page_by_y(page, y)
+        return text, book_page
 
     matched = 0
-    for idx, text in enumerate(toc_lines):
+    for idx, (text, y, page) in enumerate(toc_lines):
         text = text.strip()
         if not text:
             continue
 
-        # 尝试提取页码
-        title, book_page = extract_title_and_page(text)
+        title, book_page = extract_title_and_page(text, y, page)
 
-        # 调试：打印前 20 行的处理情况
         if idx < 25:
-            print(f"[API]   TOC行[{idx}]: '{text}' -> title='{title}', page={book_page}")
+            print(f"[API]   TOC行[{idx}]: '{text}' -> title='{title}', page={book_page}", flush=True)
 
         # 单元标题（可能有页码也可能没有）
         if _is_unit_title(text, rules):
-            page = 1
+            page_num = 1
             unit_title = text
             if book_page is not None:
                 unit_title = title
-                page = book_page + offset
-            cur_unit = {'title': unit_title, 'page': max(1, min(page, total_pages)), 'lessons': []}
+                page_num = book_page + offset
+            cur_unit = {'title': unit_title, 'page': max(1, min(page_num, total_pages)), 'lessons': []}
             units.append(cur_unit)
             cur_l2 = None
             matched += 1
@@ -513,28 +537,28 @@ def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
         if book_page is None:
             continue
 
-        page = max(1, min(book_page + offset, total_pages))
+        real_page = max(1, min(book_page + offset, total_pages))
 
         # 判断是栏目还是课文
         is_group = any(kw in title for kw in rules['group_kws'])
         if cur_unit is None:
-            cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
+            cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
             units.append(cur_unit)
 
         if is_group:
             cur_l2 = None
-            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': page})
+            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': real_page})
         else:
             # 课文标题可能带编号 "1 春 / 朱自清"，也可能是子篇目 "观沧海 / 曹操"
             if rules['lesson_re'].match(title):
-                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
                 cur_unit['lessons'].append(cur_l2)
             else:
                 # 无编号的短标题 → 子篇目（L3），挂到最近的 L2 下
                 if cur_l2 is not None:
-                    cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': page})
+                    cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': real_page})
                 else:
-                    cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+                    cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
                     cur_unit['lessons'].append(cur_l2)
 
     # 过滤掉没有课文的单元
@@ -568,10 +592,12 @@ def _find_toc_pages(page_lines, rules, total_pages):
             continue
 
         text_all = "\n".join(l['text'] for l in lines)
+        # 归一化空白（处理"目 录"中特殊空格字符 U+2002/U+2003 等）
+        text_normalized = re.sub(r'\s+', '', text_all)
 
-        # 特征1：含"目录"标题
+        # 特征1：含"目录"标题（归一化后匹配，兼容特殊空格）
         has_toc_title = any(
-            kw in text_all for kw in ['目录', '目錄', 'Contents', 'CONTENTS']
+            kw in text_normalized for kw in ['目录', '目錄', 'Contents', 'CONTENTS']
         )
 
         # 特征2：多个单元标题
@@ -583,8 +609,11 @@ def _find_toc_pages(page_lines, rules, total_pages):
             if re.search(r'\d{1,3}\s*$', l['text'].strip()):
                 numbered_entries += 1
 
-        # 判定是否为目录页
-        is_toc = has_toc_title or (unit_count >= 1 and numbered_entries >= 2) or numbered_entries >= 4
+        # 判定是否为目录页：
+        # - 有"目录"标题，或
+        # - 有单元标题（双栏布局时页码在右栏，可能不在标题行末），或
+        # - 有多个带页码的条目
+        is_toc = has_toc_title or unit_count >= 1 or numbered_entries >= 4
 
         # 调试：打印每页检测结果
         print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, unit_count={unit_count}, numbered_entries={numbered_entries}, is_toc={is_toc}", flush=True)
@@ -711,7 +740,7 @@ def extract_toc_with_fitz(pdf_bytes):
     toc_pages = _find_toc_pages(page_lines, rules, total_pages)
 
     if toc_pages:
-        toc_units = _parse_toc_page(page_lines, toc_pages, rules, page_offset, total_pages)
+        toc_units = _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, page_offset, total_pages)
         if toc_units:
             print(f"[API] ✅ 目录页解析成功: {len(toc_units)} 个单元, "
                   f"目录页={sorted(toc_pages)}, offset={page_offset}")
