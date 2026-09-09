@@ -2403,16 +2403,45 @@ function extractUnitsFromContent(pageTexts, totalPages) {
 async function extractTocFromTocPages(pdf, totalPages) {
   console.log('[目录页提取] 开始定位目录页...');
 
-  // 学科规则（通用：兼容语文/历史/道法的目录格式）
-  // 单元：第X单元 / 第X章
-  const unitRe = /第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:单元|章)/;
-  // 课文：语文 "1 春" / 历史道法 "第1课 标题" / 数学 "1.1 标题"
-  const lessonRe = /^(?:\d+\*?\s*[.．、]?\s*\S|第\s*[一二三四五六七八九十百零〇两0-9]+\s*课\s*\S|\d+(?:\.\d+){1,2}\s*\S?)/;
+  // 学科规则（通用：兼容语文/历史/道法/英语的目录格式）
+  // 单元：第X单元 / 第X章 / Unit N / 圈码（➊➋➌，英语表格式目录）
+  const CIRCLED = '➊➋➌➍➎➏➐➑➒➓⓫⓬⓭⓮⓯⓰⓱⓲⓳⓴';
+  const unitRe = new RegExp(
+    '第\\s*[一二三四五六七八九十百零〇两0-9]+\\s*(?:单元|章)' +
+    '|(?:Starter\\s+)?Unit\\s*\\d+' +
+    '|[' + CIRCLED + ']', 'i'
+  );
+  // 课文：语文 "1 春" / 历史道法 "第1课 标题" / 数学 "1.1 标题" / 英语 "Section A"
+  const lessonRe = /^(?:\d+\*?\s*[.．、]?\s*\S|第\s*[一二三四五六七八九十百零〇两0-9]+\s*课\s*\S|\d+(?:\.\d+){1,2}\s*\S?|Section\s*[AB])/i;
   const groupKws = ['写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
                     '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识',
                     '活动课', '单元综合', '学史方法', '课后活动', '知识梳理', '单元总结',
                     '附录', '大事年表', '科学·技术·社会', '科学家的故事', '阅读与思考',
-                    '实验与探究', '观察与猜想', '信息技术应用', '数学活动', '小结', '复习题'];
+                    '实验与探究', '观察与猜想', '信息技术应用', '数学活动', '小结', '复习题',
+                    'Pronunciation', 'Grammar Focus', 'Project', 'Self Check',
+                    'Reading', 'Writing', 'Listening', 'Speaking', 'Vocabulary',
+                    'Words and Expressions', 'Functions', 'Strategy', 'Study skills',
+                    'Notes on the Text', 'Tapescripts', 'Name List',
+                    'Vocabulary Index', 'Just for Fun',
+                    'Topics', 'Letters and Structures', 'Starter Units'];
+  // 英语目录页码引用模式（如 "Page S1"、"Page 5"）
+  const pageRefRe = /^Page\s+(S?\d+)/i;
+  // 圈码→数字
+  function circledToNum(text) {
+    text = text.trim();
+    if (text.length === 1 && CIRCLED.includes(text)) return CIRCLED.indexOf(text) + 1;
+    return null;
+  }
+  // 查找 starter 页码对应的 PDF 真实页码
+  function findStarterPage(starterNum) {
+    const target = 'S' + starterNum;
+    for (const p of Object.keys(pageLines).map(Number).sort((a, b) => a - b)) {
+      for (const line of pageLines[p]) {
+        if (line.text.trim() === target) return p;
+      }
+    }
+    return null;
+  }
 
   // 提取所有页的文本行（带 y 坐标），同时收集页码行
   const pageLines = {};   // page -> [{text, y}]
@@ -2484,11 +2513,13 @@ async function extractTocFromTocPages(pdf, totalPages) {
     const hasTocTitle = ['目录', '目錄', 'Contents', 'CONTENTS'].some(kw => textNorm.includes(kw));
     const unitCount = (textAll.match(unitRe) || []).length;
     const numberedEntries = lines.filter(l => /\d{1,3}\s*$/.test(l.text)).length;
+    const pageRefCount = lines.filter(l => pageRefRe.test(l.text)).length;
     const isToc = tocPages.length === 0
-      ? (hasTocTitle || unitCount >= 1 || numberedEntries >= 4)
+      ? (hasTocTitle || unitCount >= 1 || numberedEntries >= 4 || pageRefCount >= 2)
       : (() => {
           const lessonCount = lines.filter(l => lessonRe.test(l.text)).length;
-          return hasTocTitle || numberedEntries >= 3 || (unitCount >= 1 && lessonCount >= 2);
+          return hasTocTitle || numberedEntries >= 3 || (unitCount >= 1 && lessonCount >= 2)
+                 || pageRefCount >= 2 || unitCount >= 2;
         })();
     console.log(`[目录页提取] 第${p}页: toc=${hasTocTitle}, units=${unitCount}, nums=${numberedEntries}, isToc=${isToc}`);
     if (isToc) tocPages.push(p);
@@ -2571,6 +2602,10 @@ async function extractTocFromTocPages(pdf, totalPages) {
   for (let idx = 0; idx < tocLines.length; idx++) {
     const { text, y, page } = tocLines[idx];
     if (!text) continue;
+
+    // ★ 跳过英语目录的 "Page Sx"/"Page x" 行（已在圈码单元中处理页码）
+    if (pageRefRe.test(text)) continue;
+
     const { title, bookPage } = extractTitleAndPage(text, y, page);
 
     // 单元标题
@@ -2580,6 +2615,34 @@ async function extractTocFromTocPages(pdf, totalPages) {
         unitTitle = title;
         pageNum = bookPage + offset;
       }
+
+      // ★ 英语表格式目录：圈码单元向前查找 "Page Sx"/"Page x" 设置页码
+      const cNum = circledToNum(text);
+      if (cNum !== null) {
+        unitTitle = `Unit ${cNum}`;
+        for (let j = idx + 1; j < Math.min(idx + 20, tocLines.length); j++) {
+          const nextRaw = tocLines[j].text.trim();
+          if (circledToNum(nextRaw) !== null || (unitRe.test(nextRaw) && nextRaw.length <= 40)) break;
+          const mRef = nextRaw.match(pageRefRe);
+          if (mRef) {
+            const ref = mRef[1];
+            if (ref.toUpperCase().startsWith('S')) {
+              const sNum = parseInt(ref.slice(1));
+              const pdfPage = findStarterPage(sNum);
+              pageNum = pdfPage || Math.max(1, Math.min(sNum + offset, totalPages));
+              unitTitle = `Starter Unit ${cNum}`;
+            } else {
+              pageNum = Math.max(1, Math.min(parseInt(ref) + offset, totalPages));
+            }
+            break;
+          }
+        }
+        curUnit = { title: unitTitle, page: Math.max(1, Math.min(pageNum, totalPages)), lessons: [] };
+        units.push(curUnit);
+        curL2 = null;
+        continue;
+      }
+
       // 检查下一行是否为单元副标题（如"隋唐时期：繁荣与开放的时代"）
       if (idx + 1 < tocLines.length) {
         const next = tocLines[idx + 1];
@@ -2643,6 +2706,14 @@ async function extractTocFromTocPages(pdf, totalPages) {
         curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
         curUnit.lessons.push(curL2);
       }
+    }
+  }
+
+  // ★ 英语表格式目录的单元可能没有课文条目（Section A/B 不在目录中列出）
+  // 为这些单元添加占位课文，确保每个单元至少有一个可点击的书签
+  for (const u of units) {
+    if (!u.lessons.some(l => l.type === 'lesson')) {
+      u.lessons.push({ title: u.title, type: 'lesson', startPage: u.page, children: [] });
     }
   }
 

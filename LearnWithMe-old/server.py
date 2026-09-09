@@ -32,6 +32,36 @@ SKIP_KEYWORDS = ['版权所有', '著作权所有', 'ISBN', 'CIP', '图书在版
 # offset = PDF 真实页码 - 印刷页码，例如印刷页2在PDF第9页 → offset=7
 PAGE_NUM_RE = re.compile(r'^[\s\-—]*(\d{1,3})[\s\-—]*$')
 
+# ===== 英语教材表格式目录支持 =====
+# 圈码字符：➊-➓(1-10), ⓫-⓴(11-20)
+CIRCLED_NUMS = '➊➋➌➍➎➏➐➑➒➓⓫⓬⓭⓮⓯⓰⓱⓲⓳⓴'
+# Starter 页码模式（如 "S1"、"S5"）
+PAGE_S_RE = re.compile(r'^S(\d{1,3})$', re.IGNORECASE)
+# 英语目录页码引用模式（如 "Page S1"、"Page 5"）
+PAGE_REF_RE = re.compile(r'^Page\s+(S?\d+)', re.IGNORECASE)
+
+
+def _circled_to_num(text):
+    """圈码字符 → 数字（➊→1, ➋→2, ...），非圈码返回 None。"""
+    text = text.strip()
+    if len(text) == 1 and text in CIRCLED_NUMS:
+        return CIRCLED_NUMS.index(text) + 1
+    return None
+
+
+def _find_starter_page(page_lines, starter_num, total_pages):
+    """在 PDF 正文中查找 starter 页码（如 "S1"）对应的 PDF 真实页码。
+
+    英语教材 starter 单元使用独立的 S 页码体系（S1, S2, ...），
+    不在常规页码偏移范围内。本函数扫描正文页查找 "S1" 等独立文本行。
+    """
+    target = f'S{starter_num}'
+    for p in sorted(page_lines.keys()):
+        for line in page_lines[p]:
+            if line['text'].strip() == target:
+                return p
+    return None
+
 # ===== 学科自适应：不同学科的单元/课文识别规则 =====
 # 每种学科一套 (unit_re, lesson_re, group_kws, name)
 # 注意：subject key 与前端 js/data.js 中的 subject.id 保持一致
@@ -63,17 +93,18 @@ SUBJECT_RULES = {
         'name': '数学',
     },
     'english': {
-        # Unit N / Starter Unit N → Section A / Section B / Pronunciation / Project
-        # 注意：单元标题必须以 Unit 或 Starter Unit 开头
-        'unit_re': re.compile(r'^(?:Starter\s+)?Unit\s*\d+', re.IGNORECASE),
+        # Unit N / Starter Unit N / 圈码（➊➋➌，表格式目录单元标识）
+        # 注意：去掉 ^ 前缀，使 findall 在整页文本中也能匹配
+        'unit_re': re.compile(r'(?:Starter\s+)?Unit\s*\d+|[' + CIRCLED_NUMS + ']', re.IGNORECASE),
         # 课文：Section A / Section B / Section B 1a-1d（编号子篇目）
         'lesson_re': re.compile(r'^Section\s*[AB]', re.IGNORECASE),
-        # 栏目关键词
+        # 栏目关键词（含表格式目录列标题）
         'group_kws': ['Pronunciation', 'Grammar Focus', 'Project', 'Self Check',
                       'Reading', 'Writing', 'Listening', 'Speaking', 'Vocabulary',
                       'Words and Expressions', 'Functions', 'Strategy', 'Study skills',
                       'Notes on the Text', 'Tapescripts', 'Name List',
-                      'Vocabulary Index', '不规则动词', '听力材料', 'Just for Fun'],
+                      'Vocabulary Index', '不规则动词', '听力材料', 'Just for Fun',
+                      'Topics', 'Letters and Structures', 'Starter Units'],
         'name': '英语',
     },
     'history': {
@@ -532,6 +563,10 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
         if not text:
             continue
 
+        # ★ 跳过英语目录的 "Page Sx"/"Page x" 行（已在圈码单元中处理页码）
+        if PAGE_REF_RE.match(text):
+            continue
+
         title, book_page = extract_title_and_page(text, y, page)
 
         if idx < 30:
@@ -544,6 +579,41 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             if book_page is not None:
                 unit_title = title
                 page_num = book_page + offset
+
+            # ★ 英语表格式目录：圈码单元向前查找 "Page Sx"/"Page x" 设置页码
+            circled_num = _circled_to_num(text)
+            if circled_num is not None:
+                unit_title = f"Unit {circled_num}"
+                for j in range(idx + 1, min(idx + 20, len(toc_lines))):
+                    next_text_raw = toc_lines[j][0].strip()
+                    # 遇到下一个圈码/Unit 标题，停止
+                    if _circled_to_num(next_text_raw) is not None:
+                        break
+                    if _is_unit_title(next_text_raw, rules):
+                        break
+                    m_ref = PAGE_REF_RE.match(next_text_raw)
+                    if m_ref:
+                        ref = m_ref.group(1)
+                        if ref.upper().startswith('S'):
+                            # Starter 页码：在正文中查找 "S1" 等独立页码行
+                            starter_num = int(ref[1:])
+                            pdf_page = _find_starter_page(page_lines, starter_num, total_pages)
+                            if pdf_page:
+                                page_num = pdf_page
+                            else:
+                                page_num = max(1, min(starter_num + offset, total_pages))
+                            unit_title = f"Starter Unit {circled_num}"
+                        else:
+                            # 普通页码
+                            page_num = max(1, min(int(ref) + offset, total_pages))
+                        break
+                print(f"[API]     → 圈码单元 {circled_num}: page={page_num}", flush=True)
+                cur_unit = {'title': unit_title, 'page': max(1, min(page_num, total_pages)), 'lessons': []}
+                units.append(cur_unit)
+                cur_l2 = None
+                matched += 1
+                continue
+
             # ★ 检查下一行是否为单元副标题（如"隋唐时期：繁荣与开放的时代"）
             # 副标题特征：无页码、不是单元标题、不是课文/栏目、长度适中
             if idx + 1 < len(toc_lines):
@@ -611,6 +681,16 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
                     cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
                     cur_unit['lessons'].append(cur_l2)
 
+    # ★ 英语表格式目录的单元可能没有课文条目（Section A/B 不在目录中列出）
+    # 为这些单元添加占位课文，确保每个单元至少有一个可点击的书签
+    if rules['name'] == '英语':
+        for u in units:
+            if not any(l['type'] == 'lesson' for l in u['lessons']):
+                u['lessons'].append({
+                    'title': u['title'], 'type': 'lesson',
+                    'startPage': u['page'], 'children': []
+                })
+
     # 过滤掉没有课文的单元
     units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
     if units:
@@ -659,21 +739,27 @@ def _find_toc_pages(page_lines, rules, total_pages):
             if re.search(r'\d{1,3}\s*$', l['text'].strip()):
                 numbered_entries += 1
 
+        # 特征4：英语表格式目录的 "Page Sx"/"Page x" 引用行
+        page_ref_count = sum(1 for l in lines if PAGE_REF_RE.match(l['text'].strip()))
+
         # 判定是否为目录页：
         # - 首个目录页（还没找到目录页时）：宽松判定
         # - 后续目录页（已找到目录页后）：严格判定
         #   需有"目录"标题，或有3+带页码条目，或有单元+课文条目（双栏布局）
         #   （避免正文中恰好含"第X单元"的页面被误判为目录续页）
         if not toc_pages:
-            is_toc = has_toc_title or unit_count >= 1 or numbered_entries >= 4
+            is_toc = has_toc_title or unit_count >= 1 or numbered_entries >= 4 or page_ref_count >= 2
         else:
             # 后续目录页需有：目录标题，或3+带页码条目，或单元+2个以上课文条目
             # 要求2+课文条目是因为正文页可能恰好含1个课文标题
+            # 英语表格式目录续页：也接受有 2+ "Page x" 引用行或 2+ 圈码/Unit 标题
             lesson_count = sum(1 for l in lines if rules['lesson_re'].match(l['text'].strip()))
-            is_toc = has_toc_title or numbered_entries >= 3 or (unit_count >= 1 and lesson_count >= 2)
+            is_toc = (has_toc_title or numbered_entries >= 3
+                      or (unit_count >= 1 and lesson_count >= 2)
+                      or page_ref_count >= 2 or unit_count >= 2)
 
         # 调试：打印每页检测结果
-        print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, unit_count={unit_count}, numbered_entries={numbered_entries}, is_toc={is_toc}", flush=True)
+        print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, unit_count={unit_count}, numbered_entries={numbered_entries}, page_refs={page_ref_count}, is_toc={is_toc}", flush=True)
         if not is_toc and p <= start_page + 1:
             # 打印前2页的内容帮助诊断
             preview = text_all[:300].replace('\n', ' | ')
