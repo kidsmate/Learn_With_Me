@@ -543,11 +543,21 @@ def _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages=None)
     1. 扫描正文页的纯页码行，统计 (PDF页码 - 印刷页码) 的众数
     2. 若正文纯页码行不足，扫描页脚短行（末尾是数字的短行）作为补充
     3. 若仍不足，根据目录结构估算：offset ≈ 目录结束页 - 首个目录条目的印刷页码
+
+    重要：仅使用目录页之后的正文页页码，避免目录中的条目页码干扰偏移计算。
+         偏移量限制在 1~30 页范围内（教材前置页不会超过 30 页）。
     """
+    toc_end = max(toc_pages) if toc_pages else 0
     offset_count = {}
 
-    # 策略1：纯页码行
+    def _is_valid_offset(off):
+        """偏移量合理性校验：1~30 页。"""
+        return 1 <= off <= 30
+
+    # 策略1：纯页码行（仅目录页之后的正文页）
     for p, nums in page_num_lines.items():
+        if p <= toc_end:
+            continue
         for item in nums:
             text = item['text'].strip()
             m = PAGE_NUM_RE.match(text)
@@ -556,11 +566,12 @@ def _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages=None)
             printed = int(m.group(1))
             if 1 <= printed <= total_pages and p > printed:
                 offset = p - printed
-                offset_count[offset] = offset_count.get(offset, 0) + 1
+                if _is_valid_offset(offset):
+                    offset_count[offset] = offset_count.get(offset, 0) + 1
 
-    # 策略2：页脚短行（末尾是数字的短行，可能是页码）
+    # 策略2：页脚短行（末尾是数字的短行，可能是页码，仅正文页）
     if not offset_count or max(offset_count.values()) < 2:
-        for p in range(1, total_pages + 1):
+        for p in range(toc_end + 1, total_pages + 1):
             for l in page_lines.get(p, []):
                 t = l['text'].strip()
                 if len(t) > 20:
@@ -570,23 +581,23 @@ def _detect_page_offset(page_num_lines, page_lines, total_pages, toc_pages=None)
                     printed = int(m.group(1))
                     if 1 <= printed <= total_pages and p > printed and printed > 0:
                         offset = p - printed
-                        offset_count[offset] = offset_count.get(offset, 0) + 1
+                        if _is_valid_offset(offset):
+                            offset_count[offset] = offset_count.get(offset, 0) + 1
 
     if offset_count:
         best_offset = max(offset_count.items(), key=lambda x: x[1])
         if best_offset[1] >= 2:
-            print(f"[API] 页码偏移检测: {best_offset[0]} (命中 {best_offset[1]} 行)")
+            print(f"[API] 页码偏移检测: {best_offset[0]} (命中 {best_offset[1]} 行, 目录结束页={toc_end})")
             return best_offset[0]
 
     # 策略3：根据目录结构估算偏移
     # 目录从第4页开始，内容在目录之后；首个目录条目的印刷页码通常为1
     if toc_pages and len(toc_pages) >= 1:
-        toc_end = max(toc_pages)
         # 估算内容起始页 = 目录结束页 + 1（可能有空白页，取 +1）
         estimated_content_start = toc_end + 1
         # 首个目录条目的印刷页码通常是1，偏移量 = 内容起始页 - 1
         estimated_offset = estimated_content_start - 1
-        if 0 < estimated_offset < total_pages:
+        if _is_valid_offset(estimated_offset):
             print(f"[API] 页码偏移估算(目录结构): {estimated_offset} (目录结束页={toc_end})")
             return estimated_offset
 

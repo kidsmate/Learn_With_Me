@@ -2751,6 +2751,8 @@ function autoExtractToc(pageTexts, totalPages, fullText) {
 
 // 自动检测页码偏移：PDF 有封面/目录等前置页，正文起始页比检测页晚
 // 策略：取第一篇课文，找到它在正文中实际出现的页面，与检测页的差就是偏移
+// 重要：搜索范围限制在检测页前后合理范围内（±15页），避免在书后方的索引/附录中
+//       错误匹配到课文标题，导致返回巨大的错误偏移量（如 88）。
 function detectPageOffset(pageTexts, units) {
   const norm = s => s.replace(/[，。、；：！？""''（）《》\s,.;:!?'"'()<>*·\d]/g, '');
   // 找第一篇课文
@@ -2767,21 +2769,42 @@ function detectPageOffset(pageTexts, units) {
   if (!coreTitle || coreTitle.length < 2) return 0;
 
   const detectedPage = firstLesson.startPage;
-  // 从检测页往后找，找标题出现在页面顶部且该页有较多正文（>15行）的页面
-  for (let p = detectedPage; p <= pageTexts.length; p++) {
+  // 限制搜索范围：检测页向前 3 页、向后 15 页
+  // 课文标题应出现在检测页附近，不会跑到几十页之后
+  const searchStart = Math.max(1, detectedPage - 3);
+  const searchEnd = Math.min(pageTexts.length, detectedPage + 15);
+
+  // 先检查检测页本身：如果标题已在检测页顶部，说明 startPage 已经是正确的 PDF 页，偏移为 0
+  const checkPage = (p) => {
+    if (p < 1 || p > pageTexts.length) return false;
     const pageText = pageTexts[p - 1];
     const lines = pageText.split('\n').map(s => s.trim()).filter(s => s);
-    // 标题是否出现在前 5 行
-    const titleInHeader = lines.slice(0, 5).some(l => norm(l).includes(coreTitle));
-    if (titleInHeader && lines.length > 10) {
+    if (lines.length < 5) return false;  // 正文页通常有较多行
+    // 标题出现在前 6 行（页面顶部）
+    const titleInHeader = lines.slice(0, 6).some(l => norm(l).includes(coreTitle));
+    return titleInHeader;
+  };
+
+  if (checkPage(detectedPage)) {
+    // 标题已在检测页，无需偏移
+    return 0;
+  }
+
+  // 检测页没有，向前/向后小范围搜索
+  for (let p = searchStart; p <= searchEnd; p++) {
+    if (p === detectedPage) continue;
+    if (checkPage(p)) {
       const offset = p - detectedPage;
-      if (offset > 0) {
+      // 合理性校验：偏移不应超过 15 页（教材前置页不会超过 15 页）
+      if (Math.abs(offset) <= 15) {
         console.log('[偏移检测] 课文:', firstLesson.title, '检测页:', detectedPage, '正文页:', p, '偏移:', offset);
         return offset;
       }
-      break;
     }
   }
+
+  // 未在合理范围内找到，返回 0（信任原始 startPage，避免错误大偏移）
+  console.log('[偏移检测] 未在合理范围内找到课文标题，使用偏移 0');
   return 0;
 }
 
@@ -2891,26 +2914,6 @@ async function extractTocFromTocPages(pdf, totalPages) {
     pageLines[i] = lines;
   }
 
-  // 检测页码偏移
-  let offset = 0;
-  const offsetCount = {};
-  for (const p of Object.keys(pageNums)) {
-    for (const item of pageNums[p]) {
-      const printed = item.num;
-      const pdfPage = parseInt(p);
-      if (printed >= 1 && printed <= totalPages && pdfPage > printed) {
-        const off = pdfPage - printed;
-        offsetCount[off] = (offsetCount[off] || 0) + 1;
-      }
-    }
-  }
-  let bestOff = 0, bestCnt = 0;
-  for (const [off, cnt] of Object.entries(offsetCount)) {
-    if (cnt > bestCnt) { bestCnt = cnt; bestOff = parseInt(off); }
-  }
-  if (bestCnt >= 2) offset = bestOff;
-  console.log('[目录页提取] 页码偏移:', offset, '(命中', bestCnt, '页)');
-
   // 定位目录页（从第4页开始）
   const tocPages = [];
   const startPage = 4;
@@ -2951,6 +2954,33 @@ async function extractTocFromTocPages(pdf, totalPages) {
     return null;
   }
   console.log('[目录页提取] 目录页:', tocPages);
+
+  // 检测页码偏移（仅使用目录页之后的正文页页码，避免目录条目页码干扰）
+  const tocEndPage = Math.max(...tocPages);
+  let offset = 0;
+  const offsetCount = {};
+  for (const p of Object.keys(pageNums)) {
+    const pdfPage = parseInt(p);
+    // 只统计目录页之后的正文页页码（页脚的印刷页码）
+    if (pdfPage <= tocEndPage) continue;
+    for (const item of pageNums[p]) {
+      const printed = item.num;
+      // 合理性校验：印刷页码应远小于 PDF 页码（因为有前置页），
+      // 且差值（偏移）应在合理范围内（1~30 页）
+      if (printed >= 1 && printed <= totalPages && pdfPage > printed) {
+        const off = pdfPage - printed;
+        if (off >= 1 && off <= 30) {
+          offsetCount[off] = (offsetCount[off] || 0) + 1;
+        }
+      }
+    }
+  }
+  let bestOff = 0, bestCnt = 0;
+  for (const [off, cnt] of Object.entries(offsetCount)) {
+    if (cnt > bestCnt) { bestCnt = cnt; bestOff = parseInt(off); }
+  }
+  if (bestCnt >= 2) offset = bestOff;
+  console.log('[目录页提取] 页码偏移:', offset, '(命中', bestCnt, '页, 目录结束页=', tocEndPage, ')');
 
   // 构建页码索引（按 y 降序 = 从上到下，与 pageLines 一致）
   const pageNumIndex = {};
