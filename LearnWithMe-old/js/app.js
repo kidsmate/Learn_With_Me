@@ -2943,10 +2943,10 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
   console.log('[目录页提取] 目录页:', tocPages);
 
-  // 构建页码索引
+  // 构建页码索引（按 y 降序 = 从上到下，与 pageLines 一致）
   const pageNumIndex = {};
   for (const p of tocPages) {
-    pageNumIndex[p] = (pageNums[p] || []).slice().sort((a, b) => a.y - b.y);
+    pageNumIndex[p] = (pageNums[p] || []).slice().sort((a, b) => b.y - a.y);
   }
   function findPageByY(page, y) {
     const nums = pageNumIndex[page] || [];
@@ -2958,10 +2958,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
     return best;
   }
 
-  // 收集目录页所有行（按 y 升序 = 从上到下）
+  // 收集目录页所有行
+  // ★ pageLines 构建时已按 y 降序（从上到下）排列，这里不再重新排序，避免颠倒
   const rawLines = [];
   for (const p of tocPages) {
-    for (const line of (pageLines[p] || []).slice().sort((a, b) => a.y - b.y)) {
+    for (const line of (pageLines[p] || [])) {
       rawLines.push({ text: line.text.trim(), y: line.y, page: p });
     }
   }
@@ -3008,11 +3009,12 @@ async function extractTocFromTocPages(pdf, totalPages) {
 
     const { title, bookPage } = extractTitleAndPage(text, y, page);
 
-    // 单元标题
-    if (unitRe.test(text) && text.length <= 40) {
-      let pageNum = 1, unitTitle = text;
+    // 单元标题（只取"第X单元"/"Unit N"部分，避免把同一行的课文标题并入单元名）
+    const unitMatch = unitRe.exec(text);
+    if (unitMatch) {
+      let pageNum = 1;
+      let unitTitle = unitMatch[0].trim();
       if (bookPage !== null && bookPage !== undefined) {
-        unitTitle = title;
         pageNum = bookPage + offset;
       }
 
