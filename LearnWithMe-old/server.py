@@ -464,36 +464,55 @@ def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
     cur_unit = None
     cur_l2 = None
 
-    # 目录页常见的页码分隔符：连续点号、空格、制表符
-    # 条目格式："1 春 / 朱自清 ........ 2" 或 "1 春  2" 或 "第一单元  1"
-    entry_re = re.compile(r'^(.+?)[\s\.·…\-—]+(\d{1,3})\s*$')
+    # 调试：打印目录页原始行（帮助诊断格式问题）
+    print(f"[API] 目录页原始行数: {len(toc_lines)}")
 
-    for text in toc_lines:
+    # 从每行末尾提取页码：找行中最后一个 1-3 位数字
+    # 标题 = 该数字之前的所有文本（去除末尾的点号/空格）
+    # 这种方式不依赖特定分隔符，兼容 "........"、空格、制表符等各种引导符
+    def extract_title_and_page(text):
+        """从目录行提取 (标题, 印刷页码)。页码是行末最后一个数字。"""
         text = text.strip()
-        if not text or len(text) > 60:
+        # 匹配行末的数字（前面可以有点号/空格等引导符）
+        m = re.search(r'(\d{1,3})\s*$', text)
+        if not m:
+            return None, None
+        book_page = int(m.group(1))
+        # 标题 = 页码之前的文本，去除末尾的引导符（点号、空格、横线等）
+        title = text[:m.start()].strip()
+        title = re.sub(r'[\.·…\-—\s]+$', '', title).strip()
+        return title, book_page
+
+    matched = 0
+    for idx, text in enumerate(toc_lines):
+        text = text.strip()
+        if not text:
             continue
 
-        # 单元标题（无页码或页码在末尾）
+        # 尝试提取页码
+        title, book_page = extract_title_and_page(text)
+
+        # 调试：打印前 20 行的处理情况
+        if idx < 25:
+            print(f"[API]   TOC行[{idx}]: '{text}' -> title='{title}', page={book_page}")
+
+        # 单元标题（可能有页码也可能没有）
         if _is_unit_title(text, rules):
-            # 尝试提取页码
-            m = entry_re.match(text)
             page = 1
-            title = text
-            if m:
-                title = m.group(1).strip()
-                page = int(m.group(2)) + offset
-            cur_unit = {'title': title, 'page': max(1, min(page, total_pages)), 'lessons': []}
+            unit_title = text
+            if book_page is not None:
+                unit_title = title
+                page = book_page + offset
+            cur_unit = {'title': unit_title, 'page': max(1, min(page, total_pages)), 'lessons': []}
             units.append(cur_unit)
             cur_l2 = None
+            matched += 1
             continue
 
-        # 课文/栏目条目：必须匹配 "标题 ... 页码" 格式
-        m = entry_re.match(text)
-        if not m:
+        # 非单元行必须有页码才是有效目录条目
+        if book_page is None:
             continue
 
-        title = m.group(1).strip()
-        book_page = int(m.group(2))
         page = max(1, min(book_page + offset, total_pages))
 
         # 判断是栏目还是课文
