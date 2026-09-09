@@ -2431,7 +2431,10 @@ async function extractTocFromTocPages(pdf, totalPages) {
     const lines = [];
     const sortedYs = Object.keys(yMap).map(Number).sort((a, b) => b - a);
     for (const y of sortedYs) {
-      const line = yMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('').trim();
+      let line = yMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('');
+      // 归一化：全角数字→半角（PDF 教材中常出现全角数字如 ２３４）
+      line = line.replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 48));
+      line = line.trim();
       if (line) {
         if (pageNumRe.test(line)) {
           const m = line.match(pageNumRe);
@@ -2476,7 +2479,12 @@ async function extractTocFromTocPages(pdf, totalPages) {
     const hasTocTitle = ['目录', '目錄', 'Contents', 'CONTENTS'].some(kw => textNorm.includes(kw));
     const unitCount = (textAll.match(unitRe) || []).length;
     const numberedEntries = lines.filter(l => /\d{1,3}\s*$/.test(l.text)).length;
-    const isToc = hasTocTitle || unitCount >= 1 || numberedEntries >= 4;
+    const isToc = tocPages.length === 0
+      ? (hasTocTitle || unitCount >= 1 || numberedEntries >= 4)
+      : (() => {
+          const lessonCount = lines.filter(l => lessonRe.test(l.text)).length;
+          return hasTocTitle || numberedEntries >= 3 || (unitCount >= 1 && lessonCount >= 2);
+        })();
     console.log(`[目录页提取] 第${p}页: toc=${hasTocTitle}, units=${unitCount}, nums=${numberedEntries}, isToc=${isToc}`);
     if (isToc) tocPages.push(p);
     else if (tocPages.length > 0) break;

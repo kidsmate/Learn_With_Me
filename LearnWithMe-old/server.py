@@ -5,10 +5,20 @@ import json
 import os
 import re
 import io
+import unicodedata
 from urllib.parse import unquote
 
 PORT = 8080
 ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _normalize_text(text):
+    """归一化文本：全角数字→半角，全角空格→半角，兼容 PDF 排版差异。
+
+    PDF 教材中常出现全角数字（如 ２３４５６７８９０），
+    导致正则 [0-9] 无法匹配。NFKC 归一化将其转为 ASCII。
+    """
+    return unicodedata.normalize('NFKC', text)
 
 # 人教版初中语文目录正则与关键词（参考用户的 Python 书签程序）
 UNIT_RE = re.compile(r'第[一二三四五六七八九十百零〇两0-9]+单元')
@@ -610,10 +620,17 @@ def _find_toc_pages(page_lines, rules, total_pages):
                 numbered_entries += 1
 
         # 判定是否为目录页：
-        # - 有"目录"标题，或
-        # - 有单元标题（双栏布局时页码在右栏，可能不在标题行末），或
-        # - 有多个带页码的条目
-        is_toc = has_toc_title or unit_count >= 1 or numbered_entries >= 4
+        # - 首个目录页（还没找到目录页时）：宽松判定
+        # - 后续目录页（已找到目录页后）：严格判定
+        #   需有"目录"标题，或有3+带页码条目，或有单元+课文条目（双栏布局）
+        #   （避免正文中恰好含"第X单元"的页面被误判为目录续页）
+        if not toc_pages:
+            is_toc = has_toc_title or unit_count >= 1 or numbered_entries >= 4
+        else:
+            # 后续目录页需有：目录标题，或3+带页码条目，或单元+2个以上课文条目
+            # 要求2+课文条目是因为正文页可能恰好含1个课文标题
+            lesson_count = sum(1 for l in lines if rules['lesson_re'].match(l['text'].strip()))
+            is_toc = has_toc_title or numbered_entries >= 3 or (unit_count >= 1 and lesson_count >= 2)
 
         # 调试：打印每页检测结果
         print(f"[API]   目录检测 第{p}页: has_toc_title={has_toc_title}, unit_count={unit_count}, numbered_entries={numbered_entries}, is_toc={is_toc}", flush=True)
@@ -690,7 +707,8 @@ def extract_toc_with_fitz(pdf_bytes):
                     if fs > line_max_font:
                         line_max_font = fs
                     line_y = float(span["bbox"][1])
-                line_text = line_text.strip()
+                # 归一化：全角数字→半角，全角空格→半角
+                line_text = _normalize_text(line_text).strip()
                 if not line_text or len(line_text) > 60:
                     continue
                 # 收集纯页码行（用于偏移量检测）
