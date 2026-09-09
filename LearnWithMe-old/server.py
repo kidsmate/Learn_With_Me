@@ -606,11 +606,12 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
 
     返回 units 结构，或 None（目录页无法解析）。
     """
-    # 收集目录页所有行（按 y 坐标从小到大排序 = 从上到下）
-    # 保留 y 坐标用于双栏布局页码配对
+    # 收集目录页所有行
+    # ★ PDF 坐标系：原点在左下角，y 值越大越靠上
+    # 所以从上到下排序应为 y 降序（-y）
     raw_lines = []  # [(text, y, page)]
     for p in sorted(toc_pages):
-        for line in sorted(page_lines.get(p, []), key=lambda l: l['y']):
+        for line in sorted(page_lines.get(p, []), key=lambda l: -l['y']):
             raw_lines.append((line['text'].strip(), line['y'], p))
 
     # 构建页码索引：每页的 [(y, page_number, x)]
@@ -704,11 +705,11 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             print(f"[API]   TOC行[{idx}]: '{text}' -> title='{title}', page={book_page}", flush=True)
 
         # 单元标题（可能有页码也可能没有）
-        if _is_unit_title(text, rules):
+        # ★ 用清理后的 title（不含页码）判断，避免长标题+页码超 40 字被误判
+        if _is_unit_title(title, rules):
             page_num = 1
-            unit_title = text
+            unit_title = title
             if book_page is not None:
-                unit_title = title
                 page_num = book_page + offset
 
             # ★ 英语表格式目录：圈码单元向前查找 "Page Sx"/"Page x" 设置页码
@@ -751,13 +752,13 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
                 next_text = toc_lines[idx + 1][0].strip()
                 next_title, next_page = extract_title_and_page(next_text, toc_lines[idx + 1][1], toc_lines[idx + 1][2])
                 if (next_page is None
-                        and not _is_unit_title(next_text, rules)
-                        and not rules['lesson_re'].match(next_text)
-                        and not any(kw in next_text for kw in rules['group_kws'])
-                        and 2 <= len(next_text) <= 40
-                        and next_text not in ['目录', '目錄', 'Contents']):
-                    unit_title = f"{unit_title} {next_text}"
-                    print(f"[API]     → 单元副标题合并: '{next_text}'", flush=True)
+                        and not _is_unit_title(next_title, rules)
+                        and not rules['lesson_re'].match(next_title)
+                        and not any(kw in next_title for kw in rules['group_kws'])
+                        and 2 <= len(next_title) <= 40
+                        and next_title not in ['目录', '目錄', 'Contents']):
+                    unit_title = f"{unit_title} {next_title}"
+                    print(f"[API]     → 单元副标题合并: '{next_title}'", flush=True)
             cur_unit = {'title': unit_title, 'page': max(1, min(page_num, total_pages)), 'lessons': []}
             units.append(cur_unit)
             cur_l2 = None
