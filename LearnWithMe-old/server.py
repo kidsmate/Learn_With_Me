@@ -78,9 +78,10 @@ SUBJECT_RULES = {
     },
     'history': {
         # 第X单元 → 第N课 标题 / 活动课
-        'unit_re': re.compile(r'第[一二三四五六七八九十百零〇两0-9]+单元'),
+        # 注意：PDF 提取可能出现 "第 1 课"（数字前后有空格），用 \s* 兼容
+        'unit_re': re.compile(r'第\s*[一二三四五六七八九十百零〇两0-9]+\s*单元'),
         # 第1课 / 第十课 / 第21课 + 至少一个非空白字符（标题）
-        'lesson_re': re.compile(r'第[一二三四五六七八九十百零〇两0-9]+课\s*\S'),
+        'lesson_re': re.compile(r'第\s*[一二三四五六七八九十百零〇两0-9]+\s*课\s*\S'),
         'group_kws': ['活动课', '单元综合', '学史方法', '课后活动',
                       '知识梳理', '单元总结', '附录', '大事年表', '知识拓展',
                       '相关史事', '材料研读', '问题思考'],
@@ -88,9 +89,9 @@ SUBJECT_RULES = {
     },
     'morality': {
         # 道德与法治：第X单元 → 第N课 标题 → 子篇目（无编号短标题）
-        'unit_re': re.compile(r'第[一二三四五六七八九十百零〇两0-9]+单元'),
+        'unit_re': re.compile(r'第\s*[一二三四五六七八九十百零〇两0-9]+\s*单元'),
         # 第一课 / 第10课 等
-        'lesson_re': re.compile(r'第[一二三四五六七八九十百零〇两0-9]+课\s*\S'),
+        'lesson_re': re.compile(r'第\s*[一二三四五六七八九十百零〇两0-9]+\s*课\s*\S'),
         # 栏目：单元思考与行动、相关链接、阅读感悟、方法与技能、探究与分享、拓展空间
         'group_kws': ['单元思考与行动', '相关链接', '阅读感悟', '方法与技能',
                       '探究与分享', '拓展空间', '学史方法', '生活观察',
@@ -450,32 +451,35 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
         for line in sorted(page_lines.get(p, []), key=lambda l: l['y']):
             raw_lines.append((line['text'].strip(), line['y'], p))
 
-    # 构建页码索引：每页的 [(y, page_number)]
-    page_num_index = {}  # page -> [(y, num)]
+    # 构建页码索引：每页的 [(y, page_number, x)]
+    # 只用纯页码行（双栏布局/文本拆分时页码独立成行）
+    page_num_index = {}  # page -> [(y, num, x)]
     for p in toc_pages:
         nums = []
         for pn in page_num_lines.get(p, []):
             try:
-                nums.append((pn['y'], int(pn['text'])))
+                nums.append((pn['y'], int(pn['text']), pn.get('x', 0)))
             except ValueError:
                 continue
         nums.sort(key=lambda x: x[0])
         page_num_index[p] = nums
 
     def find_page_by_y(page, y):
-        """双栏布局：通过 y 坐标在右栏找对应页码。"""
+        """通过 y 坐标在同行找页码，优先选最右侧的数字（页码通常在页面最右）。"""
         nums = page_num_index.get(page, [])
         if not nums:
             return None
-        # 找 y 坐标最接近的页码（容差 15 点）
-        best = None
-        best_dist = 15.0
-        for ny, num in nums:
+        # 找 y 坐标最接近的页码（容差 15 点），同 y 时取 x 最大的（最右）
+        candidates = []
+        for ny, num, nx in nums:
             dist = abs(ny - y)
-            if dist < best_dist:
-                best_dist = dist
-                best = num
-        return best
+            if dist <= 15.0:
+                candidates.append((dist, nx, num))
+        if not candidates:
+            return None
+        # 按 y 距离升序、x 降序排序，取第一个
+        candidates.sort(key=lambda x: (x[0], -x[1]))
+        return candidates[0][2]
 
     # 预处理：合并跨行条目。如果一行末尾不是页码，且下一行是纯页码，
     # 则将下一行的页码合并到当前行（PDF 文本提取可能把标题和页码拆成两行）
@@ -507,17 +511,20 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
 
     def extract_title_and_page(text, y, page):
         """从目录行提取 (标题, 印刷页码)。
-        先尝试行末页码（单栏），失败则用 y 坐标在右栏找（双栏）。
+        先尝试行末页码（单栏），失败则用 y 坐标找（双栏/文本拆分）。
+        无论哪种情况，都清理标题末尾的省略号/连线符。
         """
         text = text.strip()
         m = re.search(r'(\d{1,3})\s*$', text)
         if m:
             book_page = int(m.group(1))
             title = text[:m.start()].strip()
-            title = re.sub(r'[\.·…\-—\s]+$', '', title).strip()
-            return title, book_page
-        book_page = find_page_by_y(page, y)
-        return text, book_page
+        else:
+            book_page = find_page_by_y(page, y)
+            title = text
+        # 清理标题末尾的省略号、连线符、空格
+        title = re.sub(r'[\.·…\-—_\s]+$', '', title).strip()
+        return title, book_page
 
     matched = 0
     for idx, (text, y, page) in enumerate(toc_lines):
@@ -527,7 +534,7 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
 
         title, book_page = extract_title_and_page(text, y, page)
 
-        if idx < 25:
+        if idx < 30:
             print(f"[API]   TOC行[{idx}]: '{text}' -> title='{title}', page={book_page}", flush=True)
 
         # 单元标题（可能有页码也可能没有）
@@ -537,20 +544,53 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             if book_page is not None:
                 unit_title = title
                 page_num = book_page + offset
+            # ★ 检查下一行是否为单元副标题（如"隋唐时期：繁荣与开放的时代"）
+            # 副标题特征：无页码、不是单元标题、不是课文/栏目、长度适中
+            if idx + 1 < len(toc_lines):
+                next_text = toc_lines[idx + 1][0].strip()
+                next_title, next_page = extract_title_and_page(next_text, toc_lines[idx + 1][1], toc_lines[idx + 1][2])
+                if (next_page is None
+                        and not _is_unit_title(next_text, rules)
+                        and not rules['lesson_re'].match(next_text)
+                        and not any(kw in next_text for kw in rules['group_kws'])
+                        and 2 <= len(next_text) <= 40
+                        and next_text not in ['目录', '目錄', 'Contents']):
+                    unit_title = f"{unit_title} {next_text}"
+                    print(f"[API]     → 单元副标题合并: '{next_text}'", flush=True)
             cur_unit = {'title': unit_title, 'page': max(1, min(page_num, total_pages)), 'lessons': []}
             units.append(cur_unit)
             cur_l2 = None
             matched += 1
             continue
 
-        # 非单元行必须有页码才是有效目录条目
-        if book_page is None:
-            continue
-
-        real_page = max(1, min(book_page + offset, total_pages))
-
         # 判断是栏目还是课文
         is_group = any(kw in title for kw in rules['group_kws'])
+        is_lesson = rules['lesson_re'].match(title) is not None
+
+        # 无页码的非课文非栏目短行 → 单元副标题（已合并到单元标题）或装饰文字，跳过
+        if book_page is None and not is_lesson and not is_group and 2 <= len(title) <= 40:
+            continue
+
+        # 无页码的栏目直接跳过（栏目不是必须的书签）
+        if book_page is None and is_group:
+            continue
+
+        # 无页码的课文/子篇目：估算页码（用上一篇的页码+1，确保不遗漏书签）
+        if book_page is not None:
+            real_page = max(1, min(book_page + offset, total_pages))
+        else:
+            # 估算：找最近一个有页码的兄弟条目
+            last_page = 1
+            if cur_unit and cur_unit['lessons']:
+                for sib in reversed(cur_unit['lessons']):
+                    if sib.get('startPage'):
+                        last_page = sib['startPage'] + 1
+                        break
+                    elif sib.get('page'):
+                        last_page = sib['page'] + 1
+                        break
+            real_page = min(last_page, total_pages)
+
         if cur_unit is None:
             cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
             units.append(cur_unit)
@@ -560,7 +600,7 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': real_page})
         else:
             # 课文标题可能带编号 "1 春 / 朱自清"，也可能是子篇目 "观沧海 / 曹操"
-            if rules['lesson_re'].match(title):
+            if is_lesson:
                 cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
                 cur_unit['lessons'].append(cur_l2)
             else:
@@ -699,6 +739,7 @@ def extract_toc_with_fitz(pdf_bytes):
                 line_text = ""
                 line_max_font = 0.0
                 line_y = 0.0
+                line_x = 0.0
                 for span in line.get("spans", []):
                     if not span["text"].strip():
                         continue
@@ -707,21 +748,23 @@ def extract_toc_with_fitz(pdf_bytes):
                     if fs > line_max_font:
                         line_max_font = fs
                     line_y = float(span["bbox"][1])
+                    line_x = float(span["bbox"][0])
                 # 归一化：全角数字→半角，全角空格→半角
                 line_text = _normalize_text(line_text).strip()
-                if not line_text or len(line_text) > 60:
+                if not line_text or len(line_text) > 120:
                     continue
-                # 收集纯页码行（用于偏移量检测）
+                # 收集纯页码行（用于偏移量检测和双栏页码配对）
                 if PAGE_NUM_RE.match(line_text):
                     page_num_lines.setdefault(page_idx + 1, []).append({
-                        'text': line_text, 'y': round(line_y, 1)
+                        'text': line_text, 'y': round(line_y, 1), 'x': round(line_x, 1)
                     })
                     continue
                 lines.append({
                     'page': page_idx + 1,
                     'text': line_text,
                     'fontsize': line_max_font,
-                    'y': round(line_y, 1)
+                    'y': round(line_y, 1),
+                    'x': round(line_x, 1)
                 })
                 text_pages.setdefault(line_text, set()).add(page_idx + 1)
                 fs_key = str(line_max_font)

@@ -2403,11 +2403,16 @@ function extractUnitsFromContent(pageTexts, totalPages) {
 async function extractTocFromTocPages(pdf, totalPages) {
   console.log('[目录页提取] 开始定位目录页...');
 
-  // 学科规则
-  const unitRe = /第[一二三四五六七八九十百零〇两0-9]+(?:单元|章)/;
-  const lessonRe = /^\d+\*?\s*[.．、]?\s*\S/;
+  // 学科规则（通用：兼容语文/历史/道法的目录格式）
+  // 单元：第X单元 / 第X章
+  const unitRe = /第\s*[一二三四五六七八九十百零〇两0-9]+\s*(?:单元|章)/;
+  // 课文：语文 "1 春" / 历史道法 "第1课 标题" / 数学 "1.1 标题"
+  const lessonRe = /^(?:\d+\*?\s*[.．、]?\s*\S|第\s*[一二三四五六七八九十百零〇两0-9]+\s*课\s*\S|\d+(?:\.\d+){1,2}\s*\S?)/;
   const groupKws = ['写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
-                    '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识'];
+                    '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识',
+                    '活动课', '单元综合', '学史方法', '课后活动', '知识梳理', '单元总结',
+                    '附录', '大事年表', '科学·技术·社会', '科学家的故事', '阅读与思考',
+                    '实验与探究', '观察与猜想', '信息技术应用', '数学活动', '小结', '复习题'];
 
   // 提取所有页的文本行（带 y 坐标），同时收集页码行
   const pageLines = {};   // page -> [{text, y}]
@@ -2548,19 +2553,23 @@ async function extractTocFromTocPages(pdf, totalPages) {
   function extractTitleAndPage(text, y, page) {
     text = text.trim();
     const m = text.match(/(\d{1,3})\s*$/);
+    let title, bookPage;
     if (m) {
-      const bookPage = parseInt(m[1]);
-      let title = text.slice(0, m.index).trim();
-      title = title.replace(/[\.·…\-—\s]+$/, '').trim();
-      return { title, bookPage };
+      bookPage = parseInt(m[1]);
+      title = text.slice(0, m.index).trim();
+    } else {
+      bookPage = findPageByY(page, y);
+      title = text;
     }
-    return { title: text, bookPage: findPageByY(page, y) };
+    title = title.replace(/[\.·…\-—_\s]+$/, '').trim();
+    return { title, bookPage };
   }
 
   const units = [];
   let curUnit = null, curL2 = null;
 
-  for (const { text, y, page } of tocLines) {
+  for (let idx = 0; idx < tocLines.length; idx++) {
+    const { text, y, page } = tocLines[idx];
     if (!text) continue;
     const { title, bookPage } = extractTitleAndPage(text, y, page);
 
@@ -2571,16 +2580,51 @@ async function extractTocFromTocPages(pdf, totalPages) {
         unitTitle = title;
         pageNum = bookPage + offset;
       }
+      // 检查下一行是否为单元副标题（如"隋唐时期：繁荣与开放的时代"）
+      if (idx + 1 < tocLines.length) {
+        const next = tocLines[idx + 1];
+        const nextText = next.text.trim();
+        const { bookPage: nextPage } = extractTitleAndPage(nextText, next.y, next.page);
+        if (nextPage === null || nextPage === undefined) {
+          if (!unitRe.test(nextText) && !lessonRe.test(nextText)
+              && !groupKws.some(kw => nextText.includes(kw))
+              && nextText.length >= 2 && nextText.length <= 40
+              && !['目录', '目錄', 'Contents'].includes(nextText)) {
+            unitTitle = `${unitTitle} ${nextText}`;
+          }
+        }
+      }
       curUnit = { title: unitTitle, page: Math.max(1, Math.min(pageNum, totalPages)), lessons: [] };
       units.push(curUnit);
       curL2 = null;
       continue;
     }
 
-    if (bookPage === null || bookPage === undefined) continue;
-    const realPage = Math.max(1, Math.min(bookPage + offset, totalPages));
-
     const isGroup = groupKws.some(kw => title.includes(kw));
+    const isLesson = lessonRe.test(title);
+
+    // 无页码的非课文非栏目短行 → 单元副标题/装饰文字，跳过
+    if ((bookPage === null || bookPage === undefined) && !isLesson && !isGroup
+        && title.length >= 2 && title.length <= 40) continue;
+    // 无页码的栏目跳过
+    if ((bookPage === null || bookPage === undefined) && isGroup) continue;
+
+    // 估算页码（无页码时用上一篇+1）
+    let realPage;
+    if (bookPage !== null && bookPage !== undefined) {
+      realPage = Math.max(1, Math.min(bookPage + offset, totalPages));
+    } else {
+      let lastPage = 1;
+      if (curUnit && curUnit.lessons.length > 0) {
+        for (let i = curUnit.lessons.length - 1; i >= 0; i--) {
+          const sib = curUnit.lessons[i];
+          if (sib.startPage) { lastPage = sib.startPage + 1; break; }
+          if (sib.page) { lastPage = sib.page + 1; break; }
+        }
+      }
+      realPage = Math.min(lastPage, totalPages);
+    }
+
     if (!curUnit) {
       curUnit = { title: '未命名单元', page: realPage, lessons: [] };
       units.push(curUnit);
@@ -2589,7 +2633,7 @@ async function extractTocFromTocPages(pdf, totalPages) {
     if (isGroup) {
       curL2 = null;
       curUnit.lessons.push({ title, type: 'group', page: realPage });
-    } else if (lessonRe.test(title)) {
+    } else if (isLesson) {
       curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
       curUnit.lessons.push(curL2);
     } else {
