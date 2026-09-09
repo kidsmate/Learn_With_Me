@@ -429,10 +429,10 @@ def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
 
     返回 units 结构，或 None（目录页无法解析）。
     """
-    # 收集目录页所有行（保留 y 坐标用于跨行合并）
+    # 收集目录页所有行（按 y 坐标从小到大排序 = 从上到下）
     raw_lines = []
     for p in sorted(toc_pages):
-        for line in sorted(page_lines.get(p, []), key=lambda l: -l['y']):
+        for line in sorted(page_lines.get(p, []), key=lambda l: l['y']):
             raw_lines.append(line['text'].strip())
 
     # 预处理：合并跨行条目。如果一行末尾不是页码，且下一行是纯页码，
@@ -525,6 +525,78 @@ def _parse_toc_page(page_lines, toc_pages, rules, offset, total_pages):
     return units if units else None
 
 
+def _find_toc_pages(page_lines, rules, total_pages):
+    """定位目录页（只看目录页，绝不扫描正文）。
+
+    教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录。
+    目录可能有 1~3 页，需从第4页开始逐页检测，直到遇到非目录页为止。
+
+    目录页特征：
+    - 含"目录"标题字样
+    - 或有多个单元标题（第X单元）
+    - 或有多个带页码的条目（行末是数字）
+    """
+    toc_pages = set()
+    # 从第4页开始检查，最多检查到第10页（目录不会超过3-4页）
+    start_page = 4
+    end_page = min(10, total_pages)
+
+    for p in range(start_page, end_page + 1):
+        lines = page_lines.get(p, [])
+        if not lines:
+            # 空白页也可能是目录页的一部分（如目录跨页时的空白），
+            # 但如果前面已经有目录页且当前页完全空白，可能是目录结束
+            if toc_pages:
+                break
+            continue
+
+        text_all = "\n".join(l['text'] for l in lines)
+
+        # 特征1：含"目录"标题
+        has_toc_title = any(
+            kw in text_all for kw in ['目录', '目錄', 'Contents', 'CONTENTS']
+        )
+
+        # 特征2：多个单元标题
+        unit_count = len(rules['unit_re'].findall(text_all))
+
+        # 特征3：多个带页码的条目（行末是数字）
+        numbered_entries = 0
+        for l in lines:
+            if re.search(r'\d{1,3}\s*$', l['text'].strip()):
+                numbered_entries += 1
+
+        # 判定是否为目录页
+        is_toc = has_toc_title or (unit_count >= 1 and numbered_entries >= 2) or numbered_entries >= 4
+
+        if is_toc:
+            toc_pages.add(p)
+        else:
+            # 非目录页 → 目录结束
+            if toc_pages:
+                break
+
+    # 如果从第4页没找到，尝试从第3页开始（有些教材目录从第3页开始）
+    if not toc_pages:
+        for p in range(3, min(8, total_pages) + 1):
+            lines = page_lines.get(p, [])
+            if not lines:
+                continue
+            text_all = "\n".join(l['text'] for l in lines)
+            has_toc_title = any(kw in text_all for kw in ['目录', '目錄', 'Contents'])
+            numbered_entries = sum(1 for l in lines if re.search(r'\d{1,3}\s*$', l['text'].strip()))
+            if has_toc_title or numbered_entries >= 4:
+                toc_pages.add(p)
+            elif toc_pages:
+                break
+
+    if toc_pages:
+        print(f"[API] 检测到目录页: {sorted(toc_pages)}")
+    else:
+        print(f"[API] ⚠️ 未检测到目录页")
+    return toc_pages
+
+
 def extract_toc_with_fitz(pdf_bytes):
     """用 pymupdf 提取三级目录（参考用户 Python 书签程序的层级规则）。
 
@@ -610,30 +682,16 @@ def extract_toc_with_fitz(pdf_bytes):
     # offset = PDF 真实页码 - 课本印刷页码
     page_offset = _detect_page_offset(page_num_lines, total_pages)
 
-    # 跳过页检测（含目录页、版权页）
-    skip_pages = _detect_skip_pages(page_lines, rules)
-
-    # ★ 步骤 2：优先解析目录页（最可靠，目录页有印刷页码 + offset = PDF 真实页码）
-    # 扫描所有页面找目录页（不仅限于 skip_pages，避免漏检）
-    toc_pages = set()
-    for p in range(1, total_pages + 1):
-        text_all = "\n".join(l['text'] for l in page_lines.get(p, []))
-        if not text_all:
-            continue
-        # 目录页特征：含"目录"标题字样，或同时有多个单元 + 多个带页码条目
-        has_toc_title = any(
-            kw in text_all for kw in ['目录', '目錄', 'Contents', 'CONTENTS']
-        )
-        unit_count = len(rules['unit_re'].findall(text_all))
-        # 带页码的条目：行末是数字
-        numbered_entries = len(re.findall(r'\d{1,3}\s*$', text_all, re.MULTILINE))
-        if has_toc_title or (unit_count >= 2 and numbered_entries >= 3):
-            toc_pages.add(p)
+    # ★ 步骤 2：定位目录页（关键：只看目录页，绝不扫描正文！）
+    # 教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录
+    # 目录可能有 1~3 页，需动态识别目录结束位置
+    toc_pages = _find_toc_pages(page_lines, rules, total_pages)
 
     if toc_pages:
         toc_units = _parse_toc_page(page_lines, toc_pages, rules, page_offset, total_pages)
         if toc_units:
-            print(f"[API] ✅ 目录页解析成功: {len(toc_units)} 个单元, offset={page_offset}")
+            print(f"[API] ✅ 目录页解析成功: {len(toc_units)} 个单元, "
+                  f"目录页={sorted(toc_pages)}, offset={page_offset}")
             return {
                 'units': toc_units,
                 'pageOffset': 0,    # 目录页页码已加 offset 转为真实 PDF 页，前端无需再加
@@ -643,200 +701,16 @@ def extract_toc_with_fitz(pdf_bytes):
                 'subjectName': rules['name'],
                 'detectedOffset': page_offset,
             }
-        print(f"[API] 目录页解析失败，回退到正文扫描")
+        print(f"[API] ⚠️ 目录页解析失败，目录页={sorted(toc_pages)}，返回空结果")
 
-    # 正文字号 = 出现次数最多的字号
-    body_font = float(max(font_count.items(), key=lambda x: x[1])[0])
-
-    # ★ 预计算每页的 y 阈值（页面上半部分），用于过滤正文
-    # 课文标题在页面顶部，正文在中下部
-    page_y_threshold = {}
-    for p, lines in page_lines.items():
-        if not lines:
-            continue
-        ys = [l['y'] for l in lines]
-        y_min, y_max = min(ys), max(ys)
-        y_range = y_max - y_min if y_max > y_min else 1
-        page_y_threshold[p] = y_min + y_range * 0.50  # 上半部分
-
-    # 标题行 = 字号严格大于正文，不在跳过页，不是页眉页脚，且在页面上半部分
-    title_lines = [
-        l for p, lines in page_lines.items()
-        for l in lines
-        if l['fontsize'] > body_font + 0.5
-        and p not in skip_pages
-        and not _is_running_header(text_pages, l['text'], total_pages)
-        and l['y'] <= page_y_threshold.get(p, float('inf'))
-    ]
-    # 按页码、y 坐标排序（先按页，再按 y 从上到下，即降序）
-    title_lines.sort(key=lambda l: (l['page'], -l['y']))
-
-    # ★ 关键增强 1：先在正文中用学科正则找出所有单元标题（不依赖字号）
-    # 解决"单元标题用粗体而非更大字号"导致单元漏识别的问题
-    body_units = _find_units_in_body(page_lines, skip_pages, rules)
-
-    # ★ 关键增强 2：在正文中用学科正则找出所有课文标题（不依赖字号）
-    # 解决非语文学科"课文标题字号与正文一致"导致课文全部漏识别、
-    # 最终 units 被过滤为空的问题（这是数学/英语/历史/道法提取效果差的核心原因）
-    body_lessons = _find_lessons_in_body(page_lines, skip_pages, rules, body_units)
-
-    units = []
-    use_body_skeleton = bool(body_units) and bool(body_lessons)
-
-    if use_body_skeleton:
-        # 用正则找到的 (unit, lesson) 作为骨架，按页码切分填充 L3
-        # 此分支适用于：单元/课文标题字号与正文一致（如历史/道法/数学的某些版本）
-        for u_info in body_units:
-            units.append({'title': u_info['text'], 'page': u_info['page'], 'lessons': []})
-
-        # 给每个 unit 挂载 lessons（来自 body_lessons）
-        # body_lessons 已按 unit_idx 分组、按页码顺序排列
-        lesson_dict = {}   # unit_idx -> [lesson_info]
-        for bl in body_lessons:
-            lesson_dict.setdefault(bl['unit_idx'], []).append(bl)
-
-        for u_idx, u in enumerate(units):
-            cur_l2 = None
-            for bl in lesson_dict.get(u_idx, []):
-                text = bl['text']
-                page = bl['page']
-                is_group = any(kw in text for kw in rules['group_kws'])
-                if is_group:
-                    cur_l2 = None
-                    u['lessons'].append({'title': text, 'type': 'group', 'page': page})
-                else:
-                    cur_l2 = {'title': text, 'type': 'lesson', 'startPage': page, 'children': []}
-                    u['lessons'].append(cur_l2)
-
-        # 再用 title_lines（字号大于正文的行）补充 L3 子篇目
-        # 每个 L3 挂到其页码所属 lesson 的 children 里
-        # 先建立 (unit_idx, lesson_idx) -> lesson 的索引
-        lesson_index = []   # [(start_page, end_page, unit_idx, lesson_obj)]
-        for u_idx, u in enumerate(units):
-            for l in u['lessons']:
-                if l['type'] == 'lesson':
-                    lesson_index.append((l['startPage'], u_idx, l))
-
-        for line in title_lines:
-            text = line['text'].strip()
-            page = line['page']
-
-            # 跳过单元标题
-            if _is_unit_title(text, rules):
-                # 找到对应 unit 跳过其标题文本
-                for u in units:
-                    if u['title'] == text:
-                        continue
-                continue
-            # 跳过已在 body_lessons 中的课文标题（避免重复）
-            if rules['lesson_re'].match(text):
-                continue
-            # 跳过栏目（已在 body_lessons 里）
-            if any(kw in text for kw in rules['group_kws']):
-                continue
-
-            # 找到该页所属的 unit
-            cur_unit_idx = -1
-            for i, u in enumerate(units):
-                if u['page'] <= page:
-                    cur_unit_idx = i
-                else:
-                    break
-            if cur_unit_idx < 0:
-                continue
-            cur_unit = units[cur_unit_idx]
-
-            # 找到该页所属的 lesson（最近的、startPage <= page 的 lesson）
-            cur_l2 = None
-            for l in cur_unit['lessons']:
-                if l['type'] == 'lesson' and l['startPage'] <= page:
-                    cur_l2 = l
-                elif l['type'] == 'lesson' and l['startPage'] > page:
-                    break
-
-            if cur_l2 is not None:
-                # ★ 严格过滤 L3 子篇目：排除正文行
-                if _is_valid_lesson_title(text, rules):
-                    cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
-
-    elif body_units:
-        # 有单元、但 body_lessons 为空 → 走字号+正则的混合路径（原逻辑）
-        # 此分支适用于：单元用粗体而非更大字号，但课文标题字号大于正文
-        for u_info in body_units:
-            units.append({'title': u_info['text'], 'page': u_info['page'], 'lessons': []})
-
-        cur_unit_idx = -1
-        cur_l2 = None
-        for line in title_lines:
-            text = line['text'].strip()
-            page = line['page']
-
-            # 检查是否进入新单元（按页码切分）
-            while cur_unit_idx + 1 < len(units) and page >= units[cur_unit_idx + 1]['page']:
-                cur_unit_idx += 1
-                cur_l2 = None
-
-            if cur_unit_idx < 0:
-                continue   # 第一个单元之前的内容，跳过
-
-            cur_unit = units[cur_unit_idx]
-
-            # 跳过单元标题本身（已经在 unit.title 里了）
-            if _is_unit_title(text, rules) and text == cur_unit['title']:
-                continue
-
-            if _is_lesson_l2(text, rules) and _is_valid_lesson_title(text, rules):
-                is_group = any(kw in text for kw in rules['group_kws'])
-                if is_group:
-                    cur_l2 = None
-                    cur_unit['lessons'].append({'title': text, 'type': 'group', 'page': page})
-                else:
-                    cur_l2 = {'title': text, 'type': 'lesson', 'startPage': page, 'children': []}
-                    cur_unit['lessons'].append(cur_l2)
-            else:
-                # L3 子篇目：必须有 L2 父，且通过标题合法性校验
-                if cur_l2 is not None and _is_valid_lesson_title(text, rules):
-                    cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
-    else:
-        # 没有用正则找到单元 → 回退到字号 + 正则规则
-        cur_unit = None
-        cur_l2 = None
-        for line in title_lines:
-            text = line['text'].strip()
-            page = line['page']
-            if _is_unit_title(text, rules):
-                cur_unit = {'title': text, 'page': page, 'lessons': []}
-                units.append(cur_unit)
-                cur_l2 = None
-            elif _is_lesson_l2(text, rules) and _is_valid_lesson_title(text, rules):
-                if cur_unit is None:
-                    cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
-                    units.append(cur_unit)
-                is_group = any(kw in text for kw in rules['group_kws'])
-                if is_group:
-                    cur_l2 = None
-                    cur_unit['lessons'].append({'title': text, 'type': 'group', 'page': page})
-                else:
-                    cur_l2 = {'title': text, 'type': 'lesson', 'startPage': page, 'children': []}
-                    cur_unit['lessons'].append(cur_l2)
-            else:
-                if cur_l2 is not None and _is_valid_lesson_title(text, rules):
-                    cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
-
-    _compute_endpages_v2(units, total_pages)
-    units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
-
+    # 目录页解析失败 → 不回退到正文扫描（避免正文混入书签）
     return {
-        'units': units,
-        'pageOffset': 0,    # 正文扫描得到的是真实 PDF 页码，前端无需偏移
+        'units': [],
+        'pageOffset': 0,
         'totalPages': total_pages,
-        'method': 'fontsize' if not use_body_skeleton else 'body_regex',
+        'method': 'toc_failed',
         'subject': subject_key,
         'subjectName': rules['name'],
-        'bodyFont': body_font,
-        'titleCount': len(title_lines),
-        'bodyUnitsFound': len(body_units),
-        'bodyLessonsFound': len(body_lessons),
         'detectedOffset': page_offset,
     }
 
