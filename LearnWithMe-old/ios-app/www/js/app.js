@@ -2232,8 +2232,10 @@ function handlePdfUpload(file) {
       }
       document.getElementById('btnPdfSave').disabled = false;
     } catch (err) {
-      console.error(err);
-      document.getElementById('pdfStatus').textContent = '解析失败：该 PDF 可能是扫描版，需 OCR 识别';
+      console.error('[PDF解析] 异常:', err);
+      // 显示真实错误信息，不再误导为"扫描版"
+      const errMsg = err && err.message ? err.message : String(err);
+      document.getElementById('pdfStatus').textContent = `解析失败: ${errMsg}`;
       document.getElementById('pdfProgressFill').style.width = '100%';
     }
   };
@@ -3322,8 +3324,13 @@ async function extractTocFromTocPages(pdf, totalPages) {
 
   // ★ 新思路核心：根据书签标题在正文中匹配，重新定位每个 lesson 的真实 PDF 页码
   // 不再用 offset 间接换算，直接搜索标题定位真实页，pageOffset=0
-  validUnits = relocateUnitsByBodySearch(validUnits, pageLines, tocPages, totalPages);
-  console.log('[目录页提取] ✅ 正文匹配定位完成, pageOffset=0');
+  try {
+    validUnits = relocateUnitsByBodySearch(validUnits, pageLines, tocPages, totalPages);
+    console.log('[目录页提取] ✅ 正文匹配定位完成, pageOffset=0');
+  } catch (err) {
+    console.warn('[目录页提取] ⚠️ 正文匹配定位异常:', err, '保留目录页原始页码');
+    // 正文匹配失败不阻断流程，直接用目录页给出的页码
+  }
   return { units: validUnits, pageOffset: 0 };
 }
 
