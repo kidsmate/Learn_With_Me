@@ -39,9 +39,25 @@ html, body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh;
   max-width: 1024px;
   margin: 0 auto;
   background: var(--bg);
+  /* iPad 等大屏设备：放宽最大宽度以充分利用屏幕空间 */
+}
+@media (min-width: 768px) {
+  #app {
+    max-width: 100%;
+  }
+}
+/* iPad 横屏(1024px+)进一步放宽 */
+@media (min-width: 1024px) and (orientation: landscape) {
+  #app {
+    max-width: 1280px;
+    margin: 0 auto;
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
 }
 
 /* ===== Top Bar ===== */
@@ -2266,9 +2282,12 @@ html, body {
 }
 
 /* ===== Responsive (iPad) ===== */
+
+/* iPad 竖屏(768px+)：放大字号、触控热区、首页多列 */
 @media (min-width: 768px) {
   .content {
     padding: 28px;
+    font-size: 17px;
   }
   .page-header h1 {
     font-size: 32px;
@@ -2278,11 +2297,140 @@ html, body {
   }
   .tasks-grid {
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 18px;
+  }
+  .subjects-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  /* 触控热区优化（Apple HIG 建议最小 44px） */
+  .tab-item {
+    padding: 14px 4px;
+    min-height: 56px;
+  }
+  .tab-icon { font-size: 26px; }
+  .tab-label { font-size: 12px; }
+
+  .tab-btn {
+    padding: 14px 16px;
+    min-height: 48px;
+    font-size: 16px;
+  }
+
+  .btn {
+    min-height: 48px;
+    font-size: 16px;
+  }
+  .btn-sm {
+    min-height: 40px;
+  }
+
+  /* 首页问候与积分卡更舒展 */
+  .greeting-card { padding: 22px 24px; }
+  .greeting-title { font-size: 22px; }
+  .greeting-sub { font-size: 15px; }
+
+  /* 任务卡片更宽敞 */
+  .task-card { padding: 20px; }
+  .task-icon { width: 64px; height: 64px; font-size: 34px; }
+  .task-name { font-size: 17px; }
+
+  /* 卡片圆角/阴影在大屏上略增 */
+  .task-card, .subject-card {
+    border-radius: 18px;
   }
 }
 
+/* iPad 横屏(1024px+)：双栏内容布局，充分利用横向空间 */
 @media (min-width: 1024px) {
+  .content {
+    padding: 32px 36px;
+  }
+  .page-header h1 {
+    font-size: 34px;
+  }
+
+  /* 首页：问候/任务并排 */
+  #page-dashboard > .greeting-card {
+    margin-bottom: 20px;
+  }
+  .tasks-grid {
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 20px;
+  }
+
+  /* 学科首页：4 列学科卡 */
   .subjects-grid {
     grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+  }
+  .subject-card { padding: 24px; }
+  .subject-icon { font-size: 44px; }
+
+  /* 教材阅读器：固定双栏 */
+  .tb-reader {
+    flex-direction: row;
+    min-height: 70vh;
+  }
+  .tb-toc {
+    width: 320px;
+    max-height: none;
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+  }
+  .tb-content {
+    flex: 1;
+    max-height: 72vh;
+  }
+
+  /* 智慧中小学资源：4 列 */
+  .zxx-resource-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  /* 中考真题：双栏 */
+  .exercise-item {
+    break-inside: avoid;
+  }
+  .exam-list, .exam-paper-list {
+    column-count: 2;
+    column-gap: 20px;
+  }
+}
+
+/* iPad 横屏专用：进一步利用横向空间 */
+@media (min-width: 1024px) and (orientation: landscape) {
+  .content {
+    padding: 32px 48px;
+  }
+
+  /* 教材页：书签列表 + 阅读区域并排 */
+  #page-textbooks .tb-reader {
+    min-height: 80vh;
+  }
+}
+
+/* 触控设备：禁用 hover 伪类导致的"黏连"高亮 */
+@media (hover: none) and (pointer: coarse) {
+  .task-card:hover,
+  .subject-card:hover,
+  .textbook-action:hover,
+  .back-btn:hover {
+    transform: none;
+    box-shadow: var(--shadow);
+    background: var(--card);
+  }
+  .task-card:active,
+  .subject-card:active {
+    transform: scale(0.98);
+  }
+}
+
+/* iPad 横屏：避免内容过宽导致阅读疲劳（最大宽度居中） */
+@media (min-width: 1366px) {
+  .content {
+    max-width: 1280px;
+    margin: 0 auto;
+    width: 100%;
   }
 }
