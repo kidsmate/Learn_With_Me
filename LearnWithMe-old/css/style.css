@@ -138,6 +138,18 @@ html, body {
   font-size: 14px;
 }
 
+.header-settings-btn {
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.header-settings-btn:active { opacity: 1; }
+
 .back-btn {
   background: none;
   border: none;
@@ -714,6 +726,9 @@ html, body {
   padding: 16px 20px;
   border-radius: var(--radius);
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .wish-points {

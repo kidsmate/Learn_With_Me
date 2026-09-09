@@ -554,7 +554,9 @@ const currentTbSelection = {};
 let _renderedTextbooks = [];
 
 function renderLearnTextbook(subj, point) {
-  const textbooks = state.textbooks.filter(t => t.subject === subj.name || t.subject === '');
+  // 只显示与当前学科精确匹配的教材，不包含未分类（空 subject）的教材
+  // 避免如"生物"等未识别学科的教材污染所有学科的教材内容
+  const textbooks = state.textbooks.filter(t => t.subject === subj.name);
   _renderedTextbooks = textbooks;
   const container = document.getElementById('learnTextbook');
   
@@ -3428,7 +3430,7 @@ function setupEventListeners() {
     tab.addEventListener('click', () => switchLearnSection(tab.dataset.section));
   });
 
-  // 奖励标签切换
+  // 奖励标签切换（含心愿清单子标签）
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -3436,6 +3438,8 @@ function setupEventListeners() {
       const tab = btn.dataset.tab;
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       document.getElementById('tab-' + tab).classList.add('active');
+      // 切换到心愿清单时刷新积分和列表
+      if (tab === 'wishlist') renderWishlist();
     });
   });
 

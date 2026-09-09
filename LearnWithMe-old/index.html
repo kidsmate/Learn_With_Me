@@ -11,7 +11,7 @@
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" href="icons/icon-192.png">
   <title>安冉的学习助手</title>
-  <link rel="stylesheet" href="css/style.css?v=20260909f">
+  <link rel="stylesheet" href="css/style.css?v=20260909g">
   <!-- PDF.js for textbook PDF processing -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <!-- pdf-lib for adding bookmarks to PDFs -->
@@ -44,6 +44,7 @@
         <div class="page-header">
           <h1>今日学习</h1>
           <div class="date-text" id="todayDate"></div>
+          <button class="header-settings-btn" onclick="navigate('settings')" title="设置">⚙️</button>
         </div>
 
         <!-- Greeting & daily quote -->
@@ -162,7 +163,7 @@
         </div>
       </section>
 
-      <!-- ===== Rewards Page ===== -->
+      <!-- ===== Rewards Page (merged with Wishlist) ===== -->
       <section class="page" id="page-rewards">
         <div class="page-header">
           <h1>激励中心</h1>
@@ -172,6 +173,7 @@
         <div class="rewards-tabs">
           <button class="tab-btn active" data-tab="positive">🎉 正向激励</button>
           <button class="tab-btn" data-tab="negative">⚖️ 负向惩罚</button>
+          <button class="tab-btn" data-tab="wishlist">🌟 心愿清单</button>
         </div>
 
         <div class="tab-content active" id="tab-positive">
@@ -187,18 +189,14 @@
           <div class="section-title">惩罚记录</div>
           <div class="records-list" id="punishRecords"></div>
         </div>
-      </section>
 
-      <!-- ===== Wishlist Page ===== -->
-      <section class="page" id="page-wishlist">
-        <div class="page-header">
-          <h1>心愿清单</h1>
-          <button class="btn-add" id="btnAddWish">+ 添加心愿</button>
+        <div class="tab-content" id="tab-wishlist">
+          <div class="wish-summary">
+            <div class="wish-points">可用积分：<span id="wishPoints">0</span> 🪙</div>
+            <button class="btn-add" id="btnAddWish">+ 添加心愿</button>
+          </div>
+          <div class="wishlist-grid" id="wishlistGrid"></div>
         </div>
-        <div class="wish-summary">
-          <div class="wish-points">可用积分：<span id="wishPoints">0</span> 🪙</div>
-        </div>
-        <div class="wishlist-grid" id="wishlistGrid"></div>
       </section>
 
       <!-- ===== Textbooks Page ===== -->
@@ -276,17 +274,9 @@
         <div class="tab-icon">🎁</div>
         <div class="tab-label">激励</div>
       </button>
-      <button class="tab-item" data-page="wishlist">
-        <div class="tab-icon">🌟</div>
-        <div class="tab-label">心愿</div>
-      </button>
       <button class="tab-item" data-page="textbooks">
         <div class="tab-icon">📚</div>
         <div class="tab-label">教材</div>
-      </button>
-      <button class="tab-item" data-page="settings">
-        <div class="tab-icon">⚙️</div>
-        <div class="tab-label">设置</div>
       </button>
     </nav>
   </div>
@@ -371,13 +361,13 @@
   <!-- Toast -->
   <div class="toast" id="toast"></div>
 
-  <script src="js/data.js?v=20260909f"></script>
-  <script src="js/learning.js?v=20260909f"></script>
-  <script src="js/storage.js?v=20260909f"></script>
-  <script src="js/app.js?v=20260909f"></script>
+  <script src="js/data.js?v=20260909g"></script>
+  <script src="js/learning.js?v=20260909g"></script>
+  <script src="js/storage.js?v=20260909g"></script>
+  <script src="js/app.js?v=20260909g"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js?v=20260909f').then(reg => {
+      navigator.serviceWorker.register('sw.js?v=20260909g').then(reg => {
         // 检查是否有新版本的 Service Worker
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;
