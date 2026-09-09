@@ -1753,8 +1753,21 @@ function handlePdfUpload(file) {
         }
         let hasLessons = units && units.length > 0 && units.some(u => u.lessons.some(l => l.type === 'lesson'));
 
+        // 优先：仅解析目录页（不扫描正文，避免误识别）
         if (!hasLessons) {
-          console.log('[目录解析] 书签无课文或无书签，尝试字号提取...');
+          console.log('[目录解析] 尝试仅解析目录页...');
+          document.getElementById('pdfStatus').textContent = '正在解析目录页...';
+          const tocResult = await extractTocFromTocPages(pdf, pdf.numPages);
+          if (tocResult && tocResult.units && tocResult.units.length > 0) {
+            units = tocResult.units;
+            currentPdfData.pageOffset = tocResult.pageOffset || 0;
+            hasLessons = true;
+            console.log('[目录解析] ✅ 目录页提取成功');
+          }
+        }
+
+        if (!hasLessons) {
+          console.log('[目录解析] 目录页提取无结果，尝试字号提取...');
           document.getElementById('pdfStatus').textContent = '正在按字体大小提取目录...';
           const fontResult = await extractTocByFontSize(pdf);
           if (fontResult && fontResult.units && fontResult.units.length > 0) {
@@ -2380,6 +2393,241 @@ function extractLessonsWithPages(fullText, pageTexts, totalPages) {
 function extractUnitsFromContent(pageTexts, totalPages) {
   const r = autoExtractToc(pageTexts, totalPages, '');
   return (r && r.units) || [];
+}
+
+/**
+ * 客户端目录页提取（仅解析目录页，绝不扫描正文）
+ * 与服务端 _parse_toc_page 逻辑一致，作为服务端不可用时的回退
+ * 支持双栏布局（左栏标题 + 右栏页码，通过 y 坐标配对）
+ */
+async function extractTocFromTocPages(pdf, totalPages) {
+  console.log('[目录页提取] 开始定位目录页...');
+
+  // 学科规则
+  const unitRe = /第[一二三四五六七八九十百零〇两0-9]+(?:单元|章)/;
+  const lessonRe = /^\d+\*?\s*[.．、]?\s*\S/;
+  const groupKws = ['写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
+                    '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识'];
+
+  // 提取所有页的文本行（带 y 坐标），同时收集页码行
+  const pageLines = {};   // page -> [{text, y}]
+  const pageNums = {};    // page -> [{num, y}]
+  const pageNumRe = /^[\s\-—]*(\d{1,3})[\s\-—]*$/;
+
+  for (let i = 1; i <= totalPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const yMap = {};
+    for (const item of tc.items) {
+      if (!item.str || !item.str.trim()) continue;
+      const y = Math.round(item.transform[5]);
+      let key = y;
+      for (const k of Object.keys(yMap)) {
+        if (Math.abs(parseInt(k) - y) <= 3) { key = parseInt(k); break; }
+      }
+      if (!yMap[key]) yMap[key] = [];
+      yMap[key].push({ x: item.transform[4], str: item.str });
+    }
+    const lines = [];
+    const sortedYs = Object.keys(yMap).map(Number).sort((a, b) => b - a);
+    for (const y of sortedYs) {
+      const line = yMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('').trim();
+      if (line) {
+        if (pageNumRe.test(line)) {
+          const m = line.match(pageNumRe);
+          pageNums[i] = pageNums[i] || [];
+          pageNums[i].push({ num: parseInt(m[1]), y });
+        } else {
+          lines.push({ text: line, y });
+        }
+      }
+    }
+    pageLines[i] = lines;
+  }
+
+  // 检测页码偏移
+  let offset = 0;
+  const offsetCount = {};
+  for (const p of Object.keys(pageNums)) {
+    for (const item of pageNums[p]) {
+      const printed = item.num;
+      const pdfPage = parseInt(p);
+      if (printed >= 1 && printed <= totalPages && pdfPage > printed) {
+        const off = pdfPage - printed;
+        offsetCount[off] = (offsetCount[off] || 0) + 1;
+      }
+    }
+  }
+  let bestOff = 0, bestCnt = 0;
+  for (const [off, cnt] of Object.entries(offsetCount)) {
+    if (cnt > bestCnt) { bestCnt = cnt; bestOff = parseInt(off); }
+  }
+  if (bestCnt >= 2) offset = bestOff;
+  console.log('[目录页提取] 页码偏移:', offset, '(命中', bestCnt, '页)');
+
+  // 定位目录页（从第4页开始）
+  const tocPages = [];
+  const startPage = 4;
+  const endPage = Math.min(10, totalPages);
+  for (let p = startPage; p <= endPage; p++) {
+    const lines = pageLines[p] || [];
+    const textAll = lines.map(l => l.text).join('\n');
+    const textNorm = textAll.replace(/\s+/g, '');
+    const hasTocTitle = ['目录', '目錄', 'Contents', 'CONTENTS'].some(kw => textNorm.includes(kw));
+    const unitCount = (textAll.match(unitRe) || []).length;
+    const numberedEntries = lines.filter(l => /\d{1,3}\s*$/.test(l.text)).length;
+    const isToc = hasTocTitle || unitCount >= 1 || numberedEntries >= 4;
+    console.log(`[目录页提取] 第${p}页: toc=${hasTocTitle}, units=${unitCount}, nums=${numberedEntries}, isToc=${isToc}`);
+    if (isToc) tocPages.push(p);
+    else if (tocPages.length > 0) break;
+  }
+  // 兜底：从第3页开始
+  if (tocPages.length === 0) {
+    for (let p = 3; p <= Math.min(8, totalPages); p++) {
+      const lines = pageLines[p] || [];
+      const textAll = lines.map(l => l.text).join('\n');
+      const hasTocTitle = ['目录', '目錄', 'Contents'].some(kw => textAll.includes(kw));
+      const numberedEntries = lines.filter(l => /\d{1,3}\s*$/.test(l.text)).length;
+      if (hasTocTitle || numberedEntries >= 4) tocPages.push(p);
+      else if (tocPages.length > 0) break;
+    }
+  }
+
+  if (tocPages.length === 0) {
+    console.warn('[目录页提取] 未检测到目录页');
+    return null;
+  }
+  console.log('[目录页提取] 目录页:', tocPages);
+
+  // 构建页码索引
+  const pageNumIndex = {};
+  for (const p of tocPages) {
+    pageNumIndex[p] = (pageNums[p] || []).slice().sort((a, b) => a.y - b.y);
+  }
+  function findPageByY(page, y) {
+    const nums = pageNumIndex[page] || [];
+    let best = null, bestDist = 15;
+    for (const { num, y: ny } of nums) {
+      const d = Math.abs(ny - y);
+      if (d < bestDist) { bestDist = d; best = num; }
+    }
+    return best;
+  }
+
+  // 收集目录页所有行（按 y 升序 = 从上到下）
+  const rawLines = [];
+  for (const p of tocPages) {
+    for (const line of (pageLines[p] || []).slice().sort((a, b) => a.y - b.y)) {
+      rawLines.push({ text: line.text.trim(), y: line.y, page: p });
+    }
+  }
+
+  // 合并跨行条目（标题行末尾无页码，下一行为纯页码）
+  const tocLines = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const { text, y, page } = rawLines[i];
+    if (!text) continue;
+    const endsWithPage = /\d{1,3}\s*$/.test(text);
+    const nextIsPage = i + 1 < rawLines.length && /^\d{1,3}$/.test(rawLines[i + 1].text.trim());
+    if (!endsWithPage && nextIsPage) {
+      tocLines.push({ text: text + ' ... ' + rawLines[i + 1].text, y, page });
+      i++;
+    } else {
+      tocLines.push({ text, y, page });
+    }
+  }
+
+  function extractTitleAndPage(text, y, page) {
+    text = text.trim();
+    const m = text.match(/(\d{1,3})\s*$/);
+    if (m) {
+      const bookPage = parseInt(m[1]);
+      let title = text.slice(0, m.index).trim();
+      title = title.replace(/[\.·…\-—\s]+$/, '').trim();
+      return { title, bookPage };
+    }
+    return { title: text, bookPage: findPageByY(page, y) };
+  }
+
+  const units = [];
+  let curUnit = null, curL2 = null;
+
+  for (const { text, y, page } of tocLines) {
+    if (!text) continue;
+    const { title, bookPage } = extractTitleAndPage(text, y, page);
+
+    // 单元标题
+    if (unitRe.test(text) && text.length <= 40) {
+      let pageNum = 1, unitTitle = text;
+      if (bookPage !== null && bookPage !== undefined) {
+        unitTitle = title;
+        pageNum = bookPage + offset;
+      }
+      curUnit = { title: unitTitle, page: Math.max(1, Math.min(pageNum, totalPages)), lessons: [] };
+      units.push(curUnit);
+      curL2 = null;
+      continue;
+    }
+
+    if (bookPage === null || bookPage === undefined) continue;
+    const realPage = Math.max(1, Math.min(bookPage + offset, totalPages));
+
+    const isGroup = groupKws.some(kw => title.includes(kw));
+    if (!curUnit) {
+      curUnit = { title: '未命名单元', page: realPage, lessons: [] };
+      units.push(curUnit);
+    }
+
+    if (isGroup) {
+      curL2 = null;
+      curUnit.lessons.push({ title, type: 'group', page: realPage });
+    } else if (lessonRe.test(title)) {
+      curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
+      curUnit.lessons.push(curL2);
+    } else {
+      if (curL2) {
+        curL2.children.push({ title, type: 'sublesson', startPage: realPage });
+      } else {
+        curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
+        curUnit.lessons.push(curL2);
+      }
+    }
+  }
+
+  // 过滤无课文的单元
+  const validUnits = units.filter(u => u.lessons.some(l => l.type === 'lesson'));
+  if (validUnits.length === 0) {
+    console.warn('[目录页提取] 目录页解析无有效单元');
+    return null;
+  }
+
+  // 计算 endPage
+  const leaves = [];
+  for (const u of validUnits) {
+    for (const l of u.lessons) {
+      if (l.type === 'lesson') {
+        leaves.push(l);
+        for (const sub of l.children) leaves.push(sub);
+      }
+    }
+  }
+  for (let i = 0; i < leaves.length; i++) {
+    const sp = leaves[i].startPage || 1;
+    leaves[i].startPage = sp;
+    const nxt = i + 1 < leaves.length ? (leaves[i + 1].startPage || totalPages) : totalPages + 1;
+    leaves[i].endPage = Math.max(sp, nxt - 1);
+    if (leaves[i].endPage > totalPages) leaves[i].endPage = totalPages;
+  }
+  for (const u of validUnits) {
+    for (const l of u.lessons) {
+      if (l.type === 'lesson' && l.children && l.children.length > 0) {
+        l.endPage = l.children[l.children.length - 1].endPage;
+      }
+    }
+  }
+
+  console.log('[目录页提取] ✅ 成功:', validUnits.length, '个单元');
+  return { units: validUnits, pageOffset: 0 };
 }
 
 /**
