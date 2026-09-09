@@ -800,20 +800,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def handle_extract_toc(self):
         content_length = int(self.headers.get('Content-Length', 0))
+        print(f"[API] 收到提取请求: {content_length} bytes", flush=True)
         if content_length == 0:
             self.send_json({'error': 'No data received'})
             return
 
         body = self.rfile.read(content_length)
+        print(f"[API] 已读取 PDF 数据，开始提取...", flush=True)
 
         try:
             result = extract_toc_with_fitz(body)
-            print(f"[API] 提取完成: {len(result.get('units', []))} 个单元, 方法={result.get('method')}, 偏移={result.get('pageOffset')}, bodyUnits={result.get('bodyUnitsFound')}, bodyLessons={result.get('bodyLessonsFound')}")
+            print(f"[API] 提取完成: {len(result.get('units', []))} 个单元, 方法={result.get('method')}", flush=True)
             self.send_json(result)
         except Exception as e:
             import traceback
             traceback.print_exc()
-            print(f"[API] 提取失败: {e}")
+            print(f"[API] 提取失败: {e}", flush=True)
             self.send_json({'error': str(e), 'units': [], 'pageOffset': 0})
 
     def send_json(self, data):
