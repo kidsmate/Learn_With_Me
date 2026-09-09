@@ -214,6 +214,9 @@ def _find_lessons_in_body(page_lines, skip_pages, rules, units):
             # 必须匹配 lesson_re
             if not rules['lesson_re'].match(text):
                 continue
+            # ★ 严格过滤：排除正文/习题行（短标题、无句末标点、无正文特征词）
+            if not _is_valid_lesson_title(text, rules):
+                continue
             key = (unit_idx, text)
             if key in seen_keys:
                 continue
@@ -234,6 +237,47 @@ def _is_lesson_l2(text, rules=None):
         if text.startswith(kw) or kw in text[:15]:
             return True
     return False
+
+
+# 正文/习题特征词：这些词出现在行中说明不是课文标题
+BODY_MARKERS = [
+    '下列', '以下', '如图', '证明', '计算', '求证', '解答', '解：', '答：',
+    '分析', '说明', '解释', '判断', '选择', '填空', '简答', '阅读',
+    '材料', '问题', '思考', '讨论', '探究', '实践', '活动',
+    '（1）', '（2）', '（3）', '（4）', '（5）',
+    '①', '②', '③', '④', '⑤',
+    '甲', '乙', '丙', '丁',
+]
+# 句末标点：课文标题不会以这些结尾
+SENTENCE_END = '。！？.!?；;：:'
+
+
+def _is_valid_lesson_title(text, rules=None):
+    """严格判定一行是否为合法的课文标题（排除正文/习题）。
+
+    课文标题特征：短、不以句末标点结尾、不含正文特征词。
+    正文/习题特征：长句、以问号/句号结尾、含"下列/如图/证明"等。
+    """
+    text = text.strip()
+    if not text or len(text) > 30:
+        return False
+    # 不以句末标点结尾（课文标题是名词性短语，不是句子）
+    if text[-1] in SENTENCE_END:
+        return False
+    # 不含正文/习题特征词
+    for marker in BODY_MARKERS:
+        if marker in text:
+            return False
+    # 编号 + 标题 之间不应有句号（如 "1.下列..." 是习题）
+    m = re.match(r'^(\d+\*?)\s*[.．、]?\s*(.+)', text)
+    if m:
+        title_part = m.group(2).strip()
+        # 标题部分不应包含逗号/句号（正文句子才有）
+        if any(c in title_part for c in '，。、；'):
+            # 例外：作者名用 / 分隔，如 "春 / 朱自清"
+            if '/' not in title_part:
+                return False
+    return True
 
 
 def _is_running_header(text_pages_map, text, total_pages):
@@ -504,11 +548,20 @@ def extract_toc_with_fitz(pdf_bytes):
     skip_pages = _detect_skip_pages(page_lines, rules)
 
     # ★ 步骤 2：优先解析目录页（最可靠，目录页有印刷页码 + offset = PDF 真实页码）
+    # 扫描所有页面找目录页（不仅限于 skip_pages，避免漏检）
     toc_pages = set()
-    for p in skip_pages:
+    for p in range(1, total_pages + 1):
         text_all = "\n".join(l['text'] for l in page_lines.get(p, []))
-        # 目录页特征：含"目录"标题且有多个带页码的条目
-        if '目录' in text_all or '目錄' in text_all or 'Contents' in text_all:
+        if not text_all:
+            continue
+        # 目录页特征：含"目录"标题字样，或同时有多个单元 + 多个带页码条目
+        has_toc_title = any(
+            kw in text_all for kw in ['目录', '目錄', 'Contents', 'CONTENTS']
+        )
+        unit_count = len(rules['unit_re'].findall(text_all))
+        # 带页码的条目：行末是数字
+        numbered_entries = len(re.findall(r'\d{1,3}\s*$', text_all, re.MULTILINE))
+        if has_toc_title or (unit_count >= 2 and numbered_entries >= 3):
             toc_pages.add(p)
 
     if toc_pages:
@@ -624,7 +677,9 @@ def extract_toc_with_fitz(pdf_bytes):
                     break
 
             if cur_l2 is not None:
-                cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
+                # ★ 严格过滤 L3 子篇目：排除正文行
+                if _is_valid_lesson_title(text, rules):
+                    cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
 
     elif body_units:
         # 有单元、但 body_lessons 为空 → 走字号+正则的混合路径（原逻辑）
@@ -652,7 +707,7 @@ def extract_toc_with_fitz(pdf_bytes):
             if _is_unit_title(text, rules) and text == cur_unit['title']:
                 continue
 
-            if _is_lesson_l2(text, rules):
+            if _is_lesson_l2(text, rules) and _is_valid_lesson_title(text, rules):
                 is_group = any(kw in text for kw in rules['group_kws'])
                 if is_group:
                     cur_l2 = None
@@ -661,8 +716,8 @@ def extract_toc_with_fitz(pdf_bytes):
                     cur_l2 = {'title': text, 'type': 'lesson', 'startPage': page, 'children': []}
                     cur_unit['lessons'].append(cur_l2)
             else:
-                # L3 子篇目：必须有 L2 父
-                if cur_l2 is not None:
+                # L3 子篇目：必须有 L2 父，且通过标题合法性校验
+                if cur_l2 is not None and _is_valid_lesson_title(text, rules):
                     cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
     else:
         # 没有用正则找到单元 → 回退到字号 + 正则规则
@@ -675,7 +730,7 @@ def extract_toc_with_fitz(pdf_bytes):
                 cur_unit = {'title': text, 'page': page, 'lessons': []}
                 units.append(cur_unit)
                 cur_l2 = None
-            elif _is_lesson_l2(text, rules):
+            elif _is_lesson_l2(text, rules) and _is_valid_lesson_title(text, rules):
                 if cur_unit is None:
                     cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
                     units.append(cur_unit)
@@ -687,7 +742,7 @@ def extract_toc_with_fitz(pdf_bytes):
                     cur_l2 = {'title': text, 'type': 'lesson', 'startPage': page, 'children': []}
                     cur_unit['lessons'].append(cur_l2)
             else:
-                if cur_l2 is not None:
+                if cur_l2 is not None and _is_valid_lesson_title(text, rules):
                     cur_l2['children'].append({'title': text, 'type': 'sublesson', 'startPage': page})
 
     _compute_endpages_v2(units, total_pages)
