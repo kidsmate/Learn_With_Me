@@ -50,20 +50,23 @@ function countPointsForCurrentGrade(subject) {
 }
 
 /**
- * 查找某学科在当前年级下已上传的 PDF 教材
- * 匹配规则：教材 subject 字段 === 学科 name（如"语文"），且教材名含当前年级标识
+ * 查找某学科已上传的 PDF 教材（不限年级）
+ * 匹配规则：教材 subject 字段 === 学科 name（如"语文"）
+ * 同一学科有多本教材时，优先选与当前年级匹配的；否则取第一本
  */
 function findTextbookForSubject(subject) {
+  const books = (state.textbooks || []).filter(t => t.subject === subject.name);
+  if (books.length === 0) return null;
+  if (books.length === 1) return books[0];
+  // 多本教材时，优先匹配当前年级，找不到则取第一本
   const grade = state.currentGrade || '七年级上';
-  // 年级简称："七年级上" -> "七年级上册" 和 "七上"
   const fullGrade = grade + '册';
   const shortGrade = grade.replace('年级', '').replace('上', '上册').replace('下', '下册');
-  return (state.textbooks || []).find(t => {
-    if (t.subject !== subject.name) return false;
-    // 教材名包含年级标识（如"语文 七年级上册.pdf"或"七上语文.pdf"）
+  const matched = books.find(t => {
     const name = t.name || '';
     return name.includes(fullGrade) || name.includes(grade) || name.includes(shortGrade) || name.includes(grade.replace('年级',''));
   });
+  return matched || books[0];
 }
 
 /**
