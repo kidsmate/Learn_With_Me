@@ -381,8 +381,8 @@ function dailyCheckin() {
 // ============ 学科列表 ============
 function renderSubjects() {
   const grid = document.getElementById('subjectsGrid');
-  // 只显示当前年级有章节的学科（PDF 教材或内置数据有内容即可）
-  const visible = SUBJECTS.filter(s => getDisplayChapters(s).length > 0);
+  // 展示全部学科；无当前年级章节的学科显示"未开始"
+  const visible = SUBJECTS;
   grid.innerHTML = visible.map(s => {
     const chapters = getDisplayChapters(s);
     let total = 0, learned = 0;
@@ -393,13 +393,14 @@ function renderSubjects() {
     const pct = total ? Math.round(learned / total * 100) : 0;
     const hasTextbook = !!findTextbookForSubject(s);
     const tag = hasTextbook ? '<span style="font-size:11px;color:#27AE60;margin-left:4px">📚PDF</span>' : '';
+    const progressText = total > 0 ? `${learned} / ${total} 知识点` : '本年级未开始';
     return `
       <div class="subject-card" style="border-top-color:${s.color}" onclick="openSubject('${s.id}')">
         <div class="subject-icon">${s.icon}</div>
         <div class="subject-name">${s.name}${tag}</div>
         <div class="subject-desc">${s.desc}</div>
         <div class="subject-progress-mini"><div class="fill" style="width:${pct}%;background:${s.color}"></div></div>
-        <div class="subject-progress-text">${learned} / ${total} 知识点</div>
+        <div class="subject-progress-text">${progressText}</div>
       </div>
     `;
   }).join('');
