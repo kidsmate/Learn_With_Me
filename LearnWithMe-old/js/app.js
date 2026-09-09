@@ -2846,7 +2846,16 @@ async function extractTocFromTocPages(pdf, totalPages) {
   // 提取所有页的文本行（带 y 坐标），同时收集页码行
   const pageLines = {};   // page -> [{text, y}]
   const pageNums = {};    // page -> [{num, y}]
-  const pageNumRe = /^[\s\-—]*(\d{1,3})[\s\-—]*$/;
+  // 页码行检测：纯数字 或 主要由省略号/点组成末尾是数字（如"...... 6"、"· · · · 12"）
+  function detectPageNum(line) {
+    const m = line.match(/(\d{1,3})\s*$/);
+    if (!m) return null;
+    const before = line.slice(0, m.index).trim();
+    // 前面没有其他字符（纯数字行）或只有省略号/点/空格
+    const nonDotChars = before.replace(/[\.·…—_\s]/g, '');
+    if (nonDotChars.length === 0) return parseInt(m[1]);
+    return null;
+  }
 
   for (let i = 1; i <= totalPages; i++) {
     const page = await pdf.getPage(i);
@@ -2870,10 +2879,10 @@ async function extractTocFromTocPages(pdf, totalPages) {
       line = line.replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 48));
       line = line.trim();
       if (line) {
-        if (pageNumRe.test(line)) {
-          const m = line.match(pageNumRe);
+        const num = detectPageNum(line);
+        if (num !== null) {
           pageNums[i] = pageNums[i] || [];
-          pageNums[i].push({ num: parseInt(m[1]), y });
+          pageNums[i].push({ num, y });
         } else {
           lines.push({ text: line, y });
         }
@@ -2950,7 +2959,7 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
   function findPageByY(page, y) {
     const nums = pageNumIndex[page] || [];
-    let best = null, bestDist = 15;
+    let best = null, bestDist = 30;  // 双栏布局标题与页码 y 坐标可能有偏差，增大容差
     for (const { num, y: ny } of nums) {
       const d = Math.abs(ny - y);
       if (d < bestDist) { bestDist = d; best = num; }
@@ -3012,10 +3021,14 @@ async function extractTocFromTocPages(pdf, totalPages) {
     // 单元标题（只取"第X单元"/"Unit N"部分，避免把同一行的课文标题并入单元名）
     const unitMatch = unitRe.exec(text);
     if (unitMatch) {
-      let pageNum = 1;
+      let pageNum;
       let unitTitle = unitMatch[0].trim();
       if (bookPage !== null && bookPage !== undefined) {
         pageNum = bookPage + offset;
+      } else {
+        // 单元标题行无页码时，通过 y 坐标查找同目录页的页码；找不到则默认 1+offset
+        const yPage = findPageByY(page, y);
+        pageNum = (yPage !== null && yPage !== undefined) ? yPage + offset : 1 + offset;
       }
 
       // ★ 英语表格式目录：圈码单元向前查找 "Page Sx"/"Page x" 设置页码
@@ -3059,9 +3072,39 @@ async function extractTocFromTocPages(pdf, totalPages) {
           }
         }
       }
+
       curUnit = { title: unitTitle, page: Math.max(1, Math.min(pageNum, totalPages)), lessons: [] };
       units.push(curUnit);
       curL2 = null;
+
+      // ★ 处理单元标题行中包含的课文（如"第一单元 阅读 1 春 /朱自清"）
+      // 提取"第一单元"之后的剩余文本，解析其中的栏目和第一课
+      const afterUnit = text.slice(unitMatch.index + unitMatch[0].length).trim();
+      if (afterUnit) {
+        // 去掉开头的栏目关键词（如"阅读"、"写作"）
+        let rest = afterUnit;
+        for (const kw of groupKws) {
+          if (rest.startsWith(kw)) {
+            rest = rest.slice(kw.length).trim();
+            // 栏目作为独立条目
+            curUnit.lessons.push({ title: kw, type: 'group', page: pageNum });
+            curL2 = null;
+            break;
+          }
+        }
+        // 如果剩余文本匹配课文正则，提取为第一课
+        if (rest && lessonRe.test(rest)) {
+          const firstLessonPage = (bookPage !== null && bookPage !== undefined)
+            ? bookPage + offset : pageNum;
+          curL2 = {
+            title: rest,
+            type: 'lesson',
+            startPage: Math.max(1, Math.min(firstLessonPage, totalPages)),
+            children: []
+          };
+          curUnit.lessons.push(curL2);
+        }
+      }
       continue;
     }
 
