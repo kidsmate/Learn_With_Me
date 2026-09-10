@@ -896,6 +896,55 @@ function renderLearnTextbook(subj, point) {
   container.innerHTML = html;
 }
 
+// ★ 扁平化所有课文（支持嵌套结构 group→lesson→sublesson）
+function flattenAllLessons(units) {
+  const all = [];
+  units.forEach(u => {
+    u.lessons.forEach(l => {
+      if (l.type === 'group') {
+        (l.children || []).forEach(cl => {
+          if (cl.type === 'lesson') {
+            all.push(cl);
+            (cl.children || []).forEach(sub => all.push(sub));
+          }
+        });
+      } else if (l.type === 'lesson') {
+        all.push(l);
+        (l.children || []).forEach(sub => all.push(sub));
+      }
+    });
+  });
+  return all;
+}
+
+// ★ 后处理：将直接课文（未分组的）移入"阅读"组，确保 L1→L2→L3 结构
+// PDF 文本提取可能打乱顺序，导致"阅读"栏目出现在课文之后
+function reorganizeUnitLessons(units) {
+  for (const unit of units) {
+    const directLessons = unit.lessons.filter(l => l.type === 'lesson');
+    const groups = unit.lessons.filter(l => l.type === 'group');
+    if (directLessons.length === 0 || groups.length === 0) continue;
+
+    let readingGroup = null;
+    const otherGroups = [];
+    for (const g of groups) {
+      if (g.title === '阅读' && !readingGroup) {
+        readingGroup = g;
+      } else {
+        otherGroups.push(g);
+      }
+    }
+
+    if (readingGroup) {
+      const existing = readingGroup.children || [];
+      readingGroup.children = existing.concat(directLessons);
+    } else {
+      readingGroup = { title: '阅读', type: 'group', page: null, children: directLessons };
+    }
+    unit.lessons = [readingGroup].concat(otherGroups);
+  }
+}
+
 // 渲染书本式阅读器：左侧目录 + 右侧正文（左右分栏）
 function renderBookReader(units, ti, point) {
   let html = '';
@@ -905,7 +954,14 @@ function renderBookReader(units, ti, point) {
   let matchedU = -1, matchedL = -1;
   units.forEach((u, ui) => {
     u.lessons.forEach((l, li) => {
-      if (matchedU < 0 && point && l.title && (l.title.includes(point.title) || point.title.includes(l.title.substring(0, 2)) || findRelevantSection({sections:[{title:l.title,content:l.content}]}, point) === 0)) {
+      if (l.type === 'group') {
+        // ★ 嵌套结构：在 group.children 中查找匹配课文
+        (l.children || []).forEach(cl => {
+          if (matchedU < 0 && point && cl.title && (cl.title.includes(point.title) || point.title.includes(cl.title.substring(0, 2)))) {
+            matchedU = ui; matchedL = li;
+          }
+        });
+      } else if (matchedU < 0 && point && l.title && (l.title.includes(point.title) || point.title.includes(l.title.substring(0, 2)) || findRelevantSection({sections:[{title:l.title,content:l.content}]}, point) === 0)) {
         matchedU = ui; matchedL = li;
       }
     });
@@ -913,13 +969,25 @@ function renderBookReader(units, ti, point) {
   if (matchedU < 0) { matchedU = 0; matchedL = 0; }
 
   // 构建所有可导航项的扁平列表（lesson + sublesson，group 不参与导航）
+  // ★ 支持嵌套结构：group.children 下的 lesson
   const allLessons = [];
   units.forEach((u, ui) => {
     u.lessons.forEach((l, li) => {
-      if (l.type === 'lesson') {
-        allLessons.push({ unitTitle: u.title, ui, li, subIdx: -1, ...l });
+      if (l.type === 'group') {
+        // 栏目下的课文
+        (l.children || []).forEach((cl, cli) => {
+          if (cl.type === 'lesson') {
+            allLessons.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: -1, ...cl });
+            (cl.children || []).forEach((sub, si) => {
+              allLessons.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: si, ...sub });
+            });
+          }
+        });
+      } else if (l.type === 'lesson') {
+        // 无栏目的直接课文（如数学）
+        allLessons.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, ...l });
         (l.children || []).forEach((sub, si) => {
-          allLessons.push({ unitTitle: u.title, ui, li, subIdx: si, ...sub });
+          allLessons.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: si, ...sub });
         });
       }
     });
@@ -945,11 +1013,40 @@ function renderBookReader(units, ti, point) {
     html += `<div class="tb-toc-unit-label">${escapeHtml(u.title)}</div>`;
     u.lessons.forEach((l, li) => {
       if (l.type === 'group') {
-        // 栏目：缩进，不可点击
+        // ★ L2 栏目标题（阅读/写作），不可点击
         html += `<div class="tb-toc-group">${escapeHtml(l.title)}</div>`;
-      } else {
-        // 二级文章：可点击
-        const fIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.subIdx === -1);
+        // ★ L3 栏目下的课文，可点击
+        (l.children || []).forEach((cl, cli) => {
+          if (cl.type !== 'lesson') return;
+          const fIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === cli && x.subIdx === -1);
+          if (fIdx < 0) return;
+          const active = (ui === matchedU && li === matchedL);
+          const pageTag = cl.startPage ? `<span class="tb-toc-page">${cl.startPage}</span>` : '';
+          html += `
+            <div class="tb-toc-item tb-toc-lesson ${active ? 'active' : ''}"
+                 id="tb-toc-item-${ti}-${fIdx}"
+                 onclick="selectBookLesson('${ti}', ${fIdx})">
+              <span class="tb-toc-text">${escapeHtml(cl.title)}</span>${pageTag}
+            </div>
+          `;
+          // 四级子篇目（如果有）：更深的缩进，可点击
+          (cl.children || []).forEach((sub, si) => {
+            const sIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === cli && x.subIdx === si);
+            if (sIdx < 0) return;
+            const subActive = false;
+            const subPageTag = sub.startPage ? `<span class="tb-toc-page">${sub.startPage}</span>` : '';
+            html += `
+              <div class="tb-toc-item tb-toc-sublesson ${subActive ? 'active' : ''}"
+                   id="tb-toc-item-${ti}-${sIdx}"
+                   onclick="selectBookLesson('${ti}', ${sIdx})">
+                <span class="tb-toc-text">${escapeHtml(sub.title)}</span>${subPageTag}
+              </div>
+            `;
+          });
+        });
+      } else if (l.type === 'lesson') {
+        // ★ 无栏目的直接课文（如数学）
+        const fIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === -1 && x.subIdx === -1);
         const active = (ui === matchedU && li === matchedL);
         const pageTag = l.startPage ? `<span class="tb-toc-page">${l.startPage}</span>` : '';
         html += `
@@ -959,9 +1056,9 @@ function renderBookReader(units, ti, point) {
             <span class="tb-toc-text">${escapeHtml(l.title)}</span>${pageTag}
           </div>
         `;
-        // 三级子篇目（如果有）：更深的缩进，可点击
+        // 子篇目
         (l.children || []).forEach((sub, si) => {
-          const sIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.subIdx === si);
+          const sIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === -1 && x.subIdx === si);
           if (sIdx < 0) return;
           const subActive = false;
           const subPageTag = sub.startPage ? `<span class="tb-toc-page">${sub.startPage}</span>` : '';
@@ -1728,13 +1825,35 @@ function renderTocEditor(textbookId) {
     // 栏目和课文
     u.lessons.forEach((l, li) => {
       const isGroup = l.type === 'group';
-      html += `<div class="toc-edit-row ${isGroup ? 'toc-edit-group-row' : 'toc-edit-lesson-row'}">
-        <span class="toc-edit-label">${isGroup ? '栏目' : '课文'}</span>
-        <input class="toc-edit-input" value="${escapeHtml(l.title)}" onchange="tocUpdateLesson('${textbookId}', ${ui}, ${li}, 'title', this.value)" placeholder="${isGroup ? '栏目名，如：阅读' : '课文名，如：1 春'}">
-        ${isGroup ? '' : `<input class="toc-edit-input toc-edit-page" type="number" min="1" value="${l.startPage || ''}" onchange="tocUpdateLesson('${textbookId}', ${ui}, ${li}, 'startPage', this.value)" placeholder="页码">`}
-        <button class="toc-edit-btn type" onclick="tocToggleLessonType('${textbookId}', ${ui}, ${li})" title="切换栏目/课文">${isGroup ? '📖' : '📁'}</button>
-        <button class="toc-edit-btn del" onclick="tocDeleteLesson('${textbookId}', ${ui}, ${li})" title="删除">×</button>
-      </div>`;
+      if (isGroup) {
+        // ★ 栏目标题（L2）
+        html += `<div class="toc-edit-row toc-edit-group-row">
+          <span class="toc-edit-label">栏目</span>
+          <input class="toc-edit-input" value="${escapeHtml(l.title)}" onchange="tocUpdateLesson('${textbookId}', ${ui}, ${li}, 'title', this.value)" placeholder="栏目名，如：阅读">
+          <button class="toc-edit-btn del" onclick="tocDeleteLesson('${textbookId}', ${ui}, ${li})" title="删除">×</button>
+        </div>`;
+        // ★ 栏目下的课文（L3，嵌套在 group.children 中）
+        (l.children || []).forEach((cl, cli) => {
+          html += `<div class="toc-edit-row toc-edit-lesson-row">
+            <span class="toc-edit-label">课文</span>
+            <input class="toc-edit-input" value="${escapeHtml(cl.title)}" onchange="tocUpdateChildLesson('${textbookId}', ${ui}, ${li}, ${cli}, 'title', this.value)" placeholder="课文名，如：1 春">
+            <input class="toc-edit-input toc-edit-page" type="number" min="1" value="${cl.startPage || ''}" onchange="tocUpdateChildLesson('${textbookId}', ${ui}, ${li}, ${cli}, 'startPage', this.value)" placeholder="页码">
+            <button class="toc-edit-btn del" onclick="tocDeleteChildLesson('${textbookId}', ${ui}, ${li}, ${cli})" title="删除">×</button>
+          </div>`;
+        });
+        // 在栏目下添加课文按钮
+        html += `<div class="toc-edit-add-row" style="margin-left:60px;">
+          <button class="btn-secondary btn-sm" onclick="tocAddChildLesson('${textbookId}', ${ui}, ${li})">+ 课文</button>
+        </div>`;
+      } else {
+        // ★ 无栏目的直接课文
+        html += `<div class="toc-edit-row toc-edit-lesson-row">
+          <span class="toc-edit-label">课文</span>
+          <input class="toc-edit-input" value="${escapeHtml(l.title)}" onchange="tocUpdateLesson('${textbookId}', ${ui}, ${li}, 'title', this.value)" placeholder="课文名，如：1 春">
+          <input class="toc-edit-input toc-edit-page" type="number" min="1" value="${l.startPage || ''}" onchange="tocUpdateLesson('${textbookId}', ${ui}, ${li}, 'startPage', this.value)" placeholder="页码">
+          <button class="toc-edit-btn del" onclick="tocDeleteLesson('${textbookId}', ${ui}, ${li})" title="删除">×</button>
+        </div>`;
+      }
     });
 
     // 添加按钮
@@ -1788,6 +1907,7 @@ function tocBatchImport(textbookId) {
   const lines = input.value.trim().split('\n');
   const units = [];
   let curUnit = null;
+  let curGroup = null;
 
   for (const line of lines) {
     const parts = line.trim().split(',');
@@ -1800,10 +1920,19 @@ function tocBatchImport(textbookId) {
     if (level === 1) {
       curUnit = { title, page, lessons: [] };
       units.push(curUnit);
+      curGroup = null;
     } else if (level === 2 && curUnit) {
-      curUnit.lessons.push({ title, type: 'group', page });
+      // ★ 栏目（L2），课文嵌套在其 children 下
+      curGroup = { title, type: 'group', page: null, children: [] };
+      curUnit.lessons.push(curGroup);
     } else if (level === 3 && curUnit) {
-      curUnit.lessons.push({ title, type: 'lesson', startPage: page });
+      // ★ 课文（L3）添加到当前栏目或直接到单元
+      const lesson = { title, type: 'lesson', startPage: page, children: [] };
+      if (curGroup) {
+        curGroup.children.push(lesson);
+      } else {
+        curUnit.lessons.push(lesson);
+      }
     }
   }
 
@@ -1813,8 +1942,7 @@ function tocBatchImport(textbookId) {
   }
 
   // 计算 endPage
-  const allLessons = [];
-  units.forEach(u => u.lessons.forEach(l => { if (l.type === 'lesson') allLessons.push(l); }));
+  const allLessons = flattenAllLessons(units);
   for (let i = 0; i < allLessons.length; i++) {
     const next = i + 1 < allLessons.length ? allLessons[i + 1].startPage : 9999;
     allLessons[i].endPage = Math.max(allLessons[i].startPage, next - 1);
@@ -1845,12 +1973,45 @@ function tocUpdateUnit(textbookId, ui, field, value) {
 function tocAddLesson(textbookId, ui, type) {
   const t = state.textbooks.find(x => x.id === textbookId);
   if (!t || !t.units[ui]) return;
-  const newItem = type === 'group' 
-    ? { title: '新栏目', type: 'group' }
-    : { title: '新课文', type: 'lesson', startPage: 1 };
+  const newItem = type === 'group'
+    ? { title: '新栏目', type: 'group', page: null, children: [] }
+    : { title: '新课文', type: 'lesson', startPage: 1, children: [] };
   t.units[ui].lessons.push(newItem);
   saveData(state);
   renderTocEditor(textbookId);
+}
+
+// ★ 栏目下添加课文（嵌套结构）
+function tocAddChildLesson(textbookId, ui, li) {
+  const t = state.textbooks.find(x => x.id === textbookId);
+  if (!t || !t.units[ui] || !t.units[ui].lessons[li]) return;
+  const group = t.units[ui].lessons[li];
+  if (group.type !== 'group') return;
+  if (!group.children) group.children = [];
+  group.children.push({ title: '新课文', type: 'lesson', startPage: 1, children: [] });
+  saveData(state);
+  renderTocEditor(textbookId);
+}
+
+// ★ 删除栏目下的课文
+function tocDeleteChildLesson(textbookId, ui, li, cli) {
+  const t = state.textbooks.find(x => x.id === textbookId);
+  if (!t || !t.units[ui] || !t.units[ui].lessons[li]) return;
+  const group = t.units[ui].lessons[li];
+  if (group.children) group.children.splice(cli, 1);
+  saveData(state);
+  renderTocEditor(textbookId);
+}
+
+// ★ 更新栏目下的课文
+function tocUpdateChildLesson(textbookId, ui, li, cli, field, value) {
+  const t = state.textbooks.find(x => x.id === textbookId);
+  if (!t || !t.units[ui] || !t.units[ui].lessons[li]) return;
+  const group = t.units[ui].lessons[li];
+  if (!group.children || !group.children[cli]) return;
+  if (field === 'startPage') value = parseInt(value) || 0;
+  group.children[cli][field] = value;
+  saveData(state);
 }
 
 function tocDeleteLesson(textbookId, ui, li) {
@@ -1890,8 +2051,7 @@ async function tocSave(textbookId) {
   // 重新计算 endPage
   const t = state.textbooks.find(x => x.id === textbookId);
   if (t) {
-    const allLessons = [];
-    t.units.forEach(u => u.lessons.forEach(l => { if (l.type === 'lesson') allLessons.push(l); }));
+    const allLessons = flattenAllLessons(t.units);
     for (let i = 0; i < allLessons.length; i++) {
       const next = i + 1 < allLessons.length ? (allLessons[i + 1].startPage || 1) : 9999;
       allLessons[i].endPage = Math.max(allLessons[i].startPage || 1, next - 1);
@@ -2530,12 +2690,9 @@ async function extractUnitsFromOutline(pdf, outline, totalPages) {
     for (let i = 0; i < u.lessons.length; i++) {
       const l = u.lessons[i];
       if (l.type === 'group') {
-        let hasLessonAfter = false;
-        for (let j = i + 1; j < u.lessons.length; j++) {
-          if (u.lessons[j].type === 'group') break;
-          if (u.lessons[j].type === 'lesson') { hasLessonAfter = true; break; }
+        if ((l.children || []).some(c => c.type === 'lesson')) {
+          cleaned.push(l);
         }
-        if (hasLessonAfter) cleaned.push(l);
       } else {
         cleaned.push(l);
       }
@@ -2544,8 +2701,7 @@ async function extractUnitsFromOutline(pdf, outline, totalPages) {
   }
 
   // 计算 endPage
-  const allLessons = [];
-  units.forEach(u => u.lessons.forEach(l => { if (l.type === 'lesson') allLessons.push(l); }));
+  const allLessons = flattenAllLessons(units);
   for (let i = 0; i < allLessons.length; i++) {
     const next = i + 1 < allLessons.length ? allLessons[i + 1].startPage : totalPages + 1;
     allLessons[i].endPage = Math.max(allLessons[i].startPage || 1, next - 1);
@@ -2745,12 +2901,10 @@ function autoExtractToc(pageTexts, totalPages, fullText) {
     for (let i = 0; i < u.lessons.length; i++) {
       const l = u.lessons[i];
       if (l.type === 'group') {
-        let hasLessonAfter = false;
-        for (let j = i + 1; j < u.lessons.length; j++) {
-          if (u.lessons[j].type === 'group') break;
-          if (u.lessons[j].type === 'lesson') { hasLessonAfter = true; break; }
+        // ★ 嵌套结构：栏目有 children 中的课文则保留
+        if ((l.children || []).some(c => c.type === 'lesson')) {
+          cleaned.push(l);
         }
-        if (hasLessonAfter) cleaned.push(l);
       } else {
         cleaned.push(l);
       }
@@ -2759,8 +2913,7 @@ function autoExtractToc(pageTexts, totalPages, fullText) {
   }
 
   // === 第五步：计算 endPage ===
-  const allLessons = [];
-  units.forEach(u => u.lessons.forEach(l => { if (l.type === 'lesson') allLessons.push(l); }));
+  const allLessons = flattenAllLessons(units);
   for (let i = 0; i < allLessons.length; i++) {
     const next = i + 1 < allLessons.length ? allLessons[i + 1].startPage : totalPages + 1;
     allLessons[i].endPage = Math.max(allLessons[i].startPage || 1, next - 1);
@@ -2768,7 +2921,7 @@ function autoExtractToc(pageTexts, totalPages, fullText) {
     if (!allLessons[i].startPage) allLessons[i].startPage = 1;
   }
 
-  const result = units.filter(u => u.lessons.some(l => l.type === 'lesson'));
+  const result = units.filter(u => u.lessons.some(l => l.type === 'lesson' || (l.type === 'group' && (l.children || []).some(c => c.type === 'lesson'))));
   console.log('[自动提取] ✅ 完成:', result.length, '个单元,', allLessons.length, '篇课文');
 
   // === 第六步：自动检测页码偏移 ===
@@ -2988,21 +3141,24 @@ function relocateUnitsByBodySearch(units, pageLines, tocPages, totalPages) {
   for (const u of units) {
     let unitFirstPage = null;
     for (const l of u.lessons) {
-      if (l.type === 'lesson') {
+      // ★ 支持嵌套结构：group 下的 lesson 也要正文匹配定位
+      const lessonList = (l.type === 'group') ? (l.children || []) : (l.type === 'lesson' ? [l] : []);
+      for (const cl of lessonList) {
+        if (cl.type !== 'lesson') continue;
         // 保留 offset 计算的页码作为 fallback
-        const offsetPage = l.startPage || prevPage;
+        const offsetPage = cl.startPage || prevPage;
         let realPage = findLessonPdfPageByTitle(
-          pageLines, l.title, tocSet, searchStart, totalPages, prevPage
+          pageLines, cl.title, tocSet, searchStart, totalPages, prevPage
         );
         // ★ body search 误匹配保护：差距太大用 offset 页码
         if (Math.abs(realPage - offsetPage) > 5 && offsetPage > 0) {
           realPage = Math.max(1, Math.min(offsetPage, totalPages));
         }
-        l.startPage = realPage;
+        cl.startPage = realPage;
         prevPage = realPage;
         if (unitFirstPage === null) unitFirstPage = realPage;
         // sublessons
-        for (const sub of (l.children || [])) {
+        for (const sub of (cl.children || [])) {
           const subOffsetPage = sub.startPage || prevPage;
           let subPage = findLessonPdfPageByTitle(
             pageLines, sub.title, tocSet, searchStart, totalPages, prevPage
@@ -3014,21 +3170,13 @@ function relocateUnitsByBodySearch(units, pageLines, tocPages, totalPages) {
           prevPage = subPage;
         }
       }
-      // group（栏目）无独立正文，跳过
+      // group（栏目）无独立正文，跳过；非 lesson/group 跳过
     }
     if (unitFirstPage !== null) u.page = unitFirstPage;
   }
 
-  // 重新计算 endPage
-  const leaves = [];
-  for (const u of units) {
-    for (const l of u.lessons) {
-      if (l.type === 'lesson') {
-        leaves.push(l);
-        for (const sub of (l.children || [])) leaves.push(sub);
-      }
-    }
-  }
+  // 重新计算 endPage（支持嵌套结构）
+  const leaves = flattenAllLessons(units);
   for (let i = 0; i < leaves.length; i++) {
     const sp = leaves[i].startPage || 1;
     leaves[i].startPage = sp;
@@ -3036,10 +3184,17 @@ function relocateUnitsByBodySearch(units, pageLines, tocPages, totalPages) {
     leaves[i].endPage = Math.max(sp, nxt - 1);
     if (leaves[i].endPage > totalPages) leaves[i].endPage = totalPages;
   }
+  // 含 children 的 lesson，endPage 取末位 child 的 endPage（含嵌套 group.children）
   for (const u of units) {
     for (const l of u.lessons) {
       if (l.type === 'lesson' && l.children && l.children.length > 0) {
         l.endPage = l.children[l.children.length - 1].endPage;
+      } else if (l.type === 'group') {
+        for (const cl of (l.children || [])) {
+          if (cl.type === 'lesson' && cl.children && cl.children.length > 0) {
+            cl.endPage = cl.children[cl.children.length - 1].endPage;
+          }
+        }
       }
     }
   }
@@ -3258,7 +3413,7 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
 
   const units = [];
-  let curUnit = null, curL2 = null;
+  let curUnit = null, curL2 = null, curGroup = null;
 
   for (let idx = 0; idx < tocLines.length; idx++) {
     const { text, y, page } = tocLines[idx];
@@ -3300,6 +3455,7 @@ async function extractTocFromTocPages(pdf, totalPages) {
         }
         curUnit = { title: unitTitle, page: Math.max(1, Math.min(pageNum, totalPages)), lessons: [] };
         units.push(curUnit);
+        curGroup = null;
         curL2 = null;
         continue;
       }
@@ -3320,13 +3476,18 @@ async function extractTocFromTocPages(pdf, totalPages) {
       }
       curUnit = { title: unitTitle, page: Math.max(1, Math.min(pageNum, totalPages)), lessons: [] };
       units.push(curUnit);
+      curGroup = null;
       curL2 = null;
       continue;
     }
 
     const isLesson = lessonRe.test(title);
     // ★ is_lesson 优先：编号开头的标题一定是课文，即使含栏目关键词
-    const isGroup = !isLesson && groupKws.some(kw => title.includes(kw));
+    // ★ 短关键词(≤2字)用精确匹配，长关键词用子串匹配
+    // 避免"写作指导"被误判为栏目（含"写作"子串）
+    const isGroup = !isLesson && groupKws.some(kw =>
+      (kw.length <= 2 && title === kw) || (kw.length > 2 && title.includes(kw))
+    );
 
     // 无页码的非课文非栏目短行 → 单元副标题/装饰文字，跳过
     if ((bookPage === null || bookPage === undefined) && !isLesson && !isGroup
@@ -3350,51 +3511,59 @@ async function extractTocFromTocPages(pdf, totalPages) {
     }
 
     if (!curUnit) {
+      // ★ 栏目(阅读/写作)在单元标题前出现时，不要创建"未命名单元"
+      if (isGroup) continue;
       curUnit = { title: '未命名单元', page: realPage, lessons: [] };
       units.push(curUnit);
     }
 
     if (isGroup) {
+      // ★ L2 栏目：课文嵌套在其 children 下
       curL2 = null;
-      curUnit.lessons.push({ title, type: 'group', page: realPage });
-    } else if (isLesson) {
-      curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
-      curUnit.lessons.push(curL2);
+      curGroup = { title, type: 'group', page: null, children: [] };
+      curUnit.lessons.push(curGroup);
     } else {
-      if (curL2) {
-        curL2.children.push({ title, type: 'sublesson', startPage: realPage });
-      } else {
+      // ★ 课文添加到当前栏目的 children 下
+      const targetList = curGroup ? curGroup.children : curUnit.lessons;
+      if (isLesson) {
         curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
-        curUnit.lessons.push(curL2);
+        targetList.push(curL2);
+      } else {
+        if (curL2) {
+          curL2.children.push({ title, type: 'sublesson', startPage: realPage });
+        } else {
+          curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
+          targetList.push(curL2);
+        }
       }
     }
   }
 
+  // ★ 检查单元是否有课文（含嵌套 group.children）
+  const _hasLesson = (lessons) => lessons.some(l =>
+    l.type === 'lesson' || (l.type === 'group' && (l.children || []).some(c => c.type === 'lesson'))
+  );
+
+  // ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（阅读在前，课文归入栏目）
+  reorganizeUnitLessons(units);
+
   // ★ 英语表格式目录的单元可能没有课文条目（Section A/B 不在目录中列出）
   // 为这些单元添加占位课文，确保每个单元至少有一个可点击的书签
   for (const u of units) {
-    if (!u.lessons.some(l => l.type === 'lesson')) {
+    if (!_hasLesson(u.lessons)) {
       u.lessons.push({ title: u.title, type: 'lesson', startPage: u.page, children: [] });
     }
   }
 
   // 过滤无课文的单元
-  const validUnits = units.filter(u => u.lessons.some(l => l.type === 'lesson'));
+  const validUnits = units.filter(u => _hasLesson(u.lessons));
   if (validUnits.length === 0) {
     console.warn('[目录页提取] 目录页解析无有效单元');
     return null;
   }
 
-  // 计算 endPage
-  const leaves = [];
-  for (const u of validUnits) {
-    for (const l of u.lessons) {
-      if (l.type === 'lesson') {
-        leaves.push(l);
-        for (const sub of l.children) leaves.push(sub);
-      }
-    }
-  }
+  // 计算 endPage（支持嵌套结构）
+  const leaves = flattenAllLessons(validUnits);
   for (let i = 0; i < leaves.length; i++) {
     const sp = leaves[i].startPage || 1;
     leaves[i].startPage = sp;
@@ -3402,10 +3571,17 @@ async function extractTocFromTocPages(pdf, totalPages) {
     leaves[i].endPage = Math.max(sp, nxt - 1);
     if (leaves[i].endPage > totalPages) leaves[i].endPage = totalPages;
   }
+  // 含 children 的 lesson，endPage 取末位 child 的 endPage
   for (const u of validUnits) {
     for (const l of u.lessons) {
       if (l.type === 'lesson' && l.children && l.children.length > 0) {
         l.endPage = l.children[l.children.length - 1].endPage;
+      } else if (l.type === 'group') {
+        for (const cl of (l.children || [])) {
+          if (cl.type === 'lesson' && cl.children && cl.children.length > 0) {
+            cl.endPage = cl.children[cl.children.length - 1].endPage;
+          }
+        }
       }
     }
   }
@@ -3661,7 +3837,10 @@ async function extractTocByFontSize(pdf) {
       // 大标题但不是课文格式 → 可能是栏目或课文
       if (fontSize >= l3Size - 0.5 && fontSize < l1Size - 0.5) {
         // 检查是否像栏目
-        const isGroup = groupKeywords.some(kw => text.includes(kw));
+        // ★ 短关键词(≤2字)用精确匹配，长关键词用子串匹配
+        const isGroup = groupKeywords.some(kw =>
+          (kw.length <= 2 && text === kw) || (kw.length > 2 && text.includes(kw))
+        );
         if (isGroup && !entrySeen.has('g:' + text)) {
           entrySeen.add('g:' + text);
           curUnit.lessons.push({ title: text, type: 'group', page });
@@ -3700,8 +3879,7 @@ async function extractTocByFontSize(pdf) {
   }
 
   // 计算 endPage
-  const allLessons = [];
-  units.forEach(u => u.lessons.forEach(l => { if (l.type === 'lesson') allLessons.push(l); }));
+  const allLessons = flattenAllLessons(units);
   for (let i = 0; i < allLessons.length; i++) {
     const next = i + 1 < allLessons.length ? allLessons[i + 1].startPage : pdf.numPages + 1;
     allLessons[i].endPage = Math.max(allLessons[i].startPage || 1, next - 1);
@@ -3709,7 +3887,7 @@ async function extractTocByFontSize(pdf) {
     if (!allLessons[i].startPage) allLessons[i].startPage = 1;
   }
 
-  const result = units.filter(u => u.lessons.some(l => l.type === 'lesson'));
+  const result = units.filter(u => u.lessons.some(l => l.type === 'lesson' || (l.type === 'group' && (l.children || []).some(c => c.type === 'lesson'))));
   console.log('[字号提取] ✅ 完成:', result.length, '个单元,', allLessons.length, '篇课文');
 
   if (result.length === 0) return null;
@@ -3909,8 +4087,7 @@ function extractUnitsFromToc(pageTexts, totalPages) {
   if (units.length === 0) return null;
 
   // 4. 逐篇搜索正文，找到每篇课文的实际 PDF 物理页码
-  const allLessons = [];
-  units.forEach(u => u.lessons.forEach(l => allLessons.push(l)));
+  const allLessons = flattenAllLessons(units);
 
   for (const l of allLessons) {
     const core = norm(l._coreTitle);

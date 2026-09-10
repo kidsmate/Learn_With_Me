@@ -295,6 +295,7 @@ def _compute_endpages_v2(units, total_pages):
 
     叶子按 unit→lesson→sublesson 顺序扁平排列，每个叶子的 endPage = 下一个叶子的 startPage - 1。
     含 children 的 lesson 的 endPage = 最后一个 child 的 endPage（覆盖它和所有子篇目的范围）。
+    支持 group→lesson 嵌套结构。
     """
     leaves = []
     for u in units:
@@ -303,6 +304,13 @@ def _compute_endpages_v2(units, total_pages):
                 leaves.append(l)
                 for sub in l.get('children', []):
                     leaves.append(sub)
+            elif l['type'] == 'group':
+                # ★ 嵌套结构：group.children 下的 lesson
+                for cl in l.get('children', []):
+                    if cl['type'] == 'lesson':
+                        leaves.append(cl)
+                        for sub in cl.get('children', []):
+                            leaves.append(sub)
     for i, leaf in enumerate(leaves):
         sp = leaf.get('startPage', 1)
         leaf['startPage'] = sp
@@ -316,6 +324,11 @@ def _compute_endpages_v2(units, total_pages):
             if l['type'] == 'lesson' and l.get('children'):
                 last = l['children'][-1]
                 l['endPage'] = last.get('endPage', l.get('endPage', total_pages))
+            elif l['type'] == 'group':
+                for cl in l.get('children', []):
+                    if cl['type'] == 'lesson' and cl.get('children'):
+                        last = cl['children'][-1]
+                        cl['endPage'] = last.get('endPage', cl.get('endPage', total_pages))
     return units
 
 
@@ -427,6 +440,46 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
     return min(prev_pdf_page + 1, total_pages)
 
 
+def _reorganize_unit_lessons(units, rules):
+    """后处理：将直接课文（未分组的）移入"阅读"组，确保 L1→L2→L3 结构。
+
+    语文课本目录结构：单元(L1)→栏目(L2,如阅读/写作)→课文(L3)
+    PDF 文本提取可能打乱顺序，导致"阅读"栏目出现在课文之后。
+    本函数将先出现的课文归入"阅读"组，并确保"阅读"在最前。
+
+    仅对有栏目的单元生效（数学等无栏目的学科不受影响）。
+    """
+    for unit in units:
+        direct_lessons = [l for l in unit['lessons'] if l.get('type') == 'lesson']
+        groups = [l for l in unit['lessons'] if l.get('type') == 'group']
+
+        if not direct_lessons or not groups:
+            continue
+
+        # 查找已有的"阅读"组（可能为空，因为出现在课文之后）
+        reading_group = None
+        other_groups = []
+        for g in groups:
+            if g.get('title') == '阅读' and reading_group is None:
+                reading_group = g
+            else:
+                other_groups.append(g)
+
+        if reading_group:
+            # 将直接课文合并到"阅读"组
+            existing = reading_group.get('children') or []
+            reading_group['children'] = existing + direct_lessons
+        else:
+            # 创建新的"阅读"组
+            reading_group = {
+                'title': '阅读', 'type': 'group',
+                'page': None, 'children': direct_lessons
+            }
+
+        # 重构：阅读组在前，其他组在后
+        unit['lessons'] = [reading_group] + other_groups
+
+
 def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_pages):
     """从目录页解析三级目录（最可靠的方式）。
 
@@ -501,7 +554,8 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
 
     units = []
     cur_unit = None
-    cur_l2 = None
+    cur_group = None  # ★ L2 栏目（阅读/写作），课文嵌套在其 children 下
+    cur_l2 = None     # L3 课文，子篇目挂在其 children 下
 
     print(f"[API] 目录页原始行数: {len(toc_lines)}", flush=True)
 
@@ -575,6 +629,7 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
                 print(f"[API]     → 圈码单元 {circled_num}: page={page_num}", flush=True)
                 cur_unit = {'title': unit_title, 'page': max(1, min(page_num, total_pages)), 'lessons': []}
                 units.append(cur_unit)
+                cur_group = None
                 cur_l2 = None
                 matched += 1
                 continue
@@ -594,6 +649,7 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
                     print(f"[API]     → 单元副标题合并: '{next_title}'", flush=True)
             cur_unit = {'title': unit_title, 'page': max(1, min(page_num, total_pages)), 'lessons': []}
             units.append(cur_unit)
+            cur_group = None
             cur_l2 = None
             matched += 1
             continue
@@ -601,7 +657,12 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
         # 判断是栏目还是课文
         # ★ is_lesson 优先：编号开头的标题一定是课文，即使含栏目关键词（如"1 阅读"）
         is_lesson = rules['lesson_re'].match(title) is not None
-        is_group = (not is_lesson) and any(kw in title for kw in rules['group_kws'])
+        # ★ 短关键词(≤2字)用精确匹配，长关键词用子串匹配
+        # 避免"写作指导"被误判为栏目（含"写作"子串）
+        is_group = (not is_lesson) and any(
+            (len(kw) <= 2 and title == kw) or (len(kw) > 2 and kw in title)
+            for kw in rules['group_kws']
+        )
 
         # 无页码的非课文非栏目短行 → 单元副标题（已合并到单元标题）或装饰文字，跳过
         if book_page is None and not is_lesson and not is_group and 2 <= len(title) <= 40:
@@ -636,34 +697,49 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             units.append(cur_unit)
 
         if is_group:
+            # ★ L2 栏目：课文嵌套在其 children 下（三级结构：单元→栏目→课文）
             cur_l2 = None
-            # ★ 栏目不需要页码（用户需求：栏目只是分类标签）
-            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': None})
+            cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
+            cur_unit['lessons'].append(cur_group)
         else:
-            # 课文标题可能带编号 "1 春 / 朱自清"，也可能是子篇目 "观沧海 / 曹操"
+            # ★ 课文添加到当前栏目（cur_group）的 children 下
+            # 如果没有栏目（如数学），直接添加到 unit.lessons
+            target_list = cur_group['children'] if cur_group else cur_unit['lessons']
             if is_lesson:
                 cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
-                cur_unit['lessons'].append(cur_l2)
+                target_list.append(cur_l2)
             else:
-                # 无编号的短标题 → 子篇目（L3），挂到最近的 L2 下
+                # 无编号的短标题 → 子篇目，挂到最近的 L2 下
                 if cur_l2 is not None:
                     cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': real_page})
                 else:
                     cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
-                    cur_unit['lessons'].append(cur_l2)
+                    target_list.append(cur_l2)
 
     # ★ 英语表格式目录的单元可能没有课文条目（Section A/B 不在目录中列出）
     # 为这些单元添加占位课文，确保每个单元至少有一个可点击的书签
+    def _has_lesson(lessons):
+        """检查 lessons 列表（含嵌套 group.children）是否有课文。"""
+        for l in lessons:
+            if l['type'] == 'lesson':
+                return True
+            if l['type'] == 'group' and any(c['type'] == 'lesson' for c in l.get('children', [])):
+                return True
+        return False
+
     if rules['name'] == '英语':
         for u in units:
-            if not any(l['type'] == 'lesson' for l in u['lessons']):
+            if not _has_lesson(u['lessons']):
                 u['lessons'].append({
                     'title': u['title'], 'type': 'lesson',
                     'startPage': u['page'], 'children': []
                 })
 
+    # ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（阅读在前，课文归入栏目）
+    _reorganize_unit_lessons(units, rules)
+
     # 过滤掉没有课文的单元
-    units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
+    units = [u for u in units if _has_lesson(u['lessons'])]
     if units:
         _compute_endpages_v2(units, total_pages)
     return units if units else None
@@ -690,43 +766,45 @@ def _relocate_units_by_body_search(units, page_lines, toc_pages, total_pages, ru
     prev_page = max(1, search_start)
     body_search_hits = 0
     body_search_misses = 0
+
+    def _process_lesson(lesson):
+        """处理单个 lesson（含 sublessons）的页码定位。"""
+        nonlocal prev_page, body_search_hits, body_search_misses, unit_first_page
+        offset_page = lesson.get('startPage', prev_page)
+        real_page = _find_lesson_pdf_page_by_title(
+            page_lines, lesson['title'], toc_pages, search_start,
+            total_pages, rules, prev_page
+        )
+        if abs(real_page - offset_page) > 5 and offset_page > 0:
+            body_search_misses += 1
+            real_page = max(1, min(offset_page, total_pages))
+        else:
+            body_search_hits += 1
+        lesson['startPage'] = real_page
+        prev_page = real_page
+        if unit_first_page is None:
+            unit_first_page = real_page
+        for sub in lesson.get('children', []):
+            offset_page = sub.get('startPage', prev_page)
+            sub_page = _find_lesson_pdf_page_by_title(
+                page_lines, sub['title'], toc_pages, search_start,
+                total_pages, rules, prev_page
+            )
+            if abs(sub_page - offset_page) > 5 and offset_page > 0:
+                sub_page = max(1, min(offset_page, total_pages))
+            sub['startPage'] = sub_page
+            prev_page = sub_page
+
     for u in units:
-        # 单元标题页：用单元第一个 lesson 的页码或单元标题搜索
         unit_first_page = None
         for l in u['lessons']:
             if l.get('type') == 'lesson':
-                # lesson 自身 — 保留 _parse_toc_page 计算的 offset 页码作为 fallback
-                offset_page = l.get('startPage', prev_page)
-                real_page = _find_lesson_pdf_page_by_title(
-                    page_lines, l['title'], toc_pages, search_start,
-                    total_pages, rules, prev_page
-                )
-                # ★ 如果 body search 找到的页和 offset 页差太远（>5页），
-                # 可能是误匹配，用 offset 页码作为 fallback
-                if abs(real_page - offset_page) > 5 and offset_page > 0:
-                    body_search_misses += 1
-                    real_page = max(1, min(offset_page, total_pages))
-                else:
-                    body_search_hits += 1
-                l['startPage'] = real_page
-                prev_page = real_page
-                if unit_first_page is None:
-                    unit_first_page = real_page
-                # sublessons
-                for sub in l.get('children', []):
-                    offset_page = sub.get('startPage', prev_page)
-                    sub_page = _find_lesson_pdf_page_by_title(
-                        page_lines, sub['title'], toc_pages, search_start,
-                        total_pages, rules, prev_page
-                    )
-                    if abs(sub_page - offset_page) > 5 and offset_page > 0:
-                        sub_page = max(1, min(offset_page, total_pages))
-                    sub['startPage'] = sub_page
-                    prev_page = sub_page
+                _process_lesson(l)
             elif l.get('type') == 'group':
-                # 栏目无独立正文，跳过（不更新 prev_page）
-                continue
-        # 更新单元 page 为首个 lesson 的页码
+                # ★ 栏目下的课文（嵌套结构）
+                for cl in l.get('children', []):
+                    if cl.get('type') == 'lesson':
+                        _process_lesson(cl)
         if unit_first_page is not None:
             u['page'] = unit_first_page
 
@@ -1037,6 +1115,7 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
     """
     units = []
     cur_unit = None
+    cur_group = None  # ★ L2 栏目，课文嵌套在其 children 下
     cur_l2 = None
 
     # 预处理：合并跨行条目（OCR 可能把标题和页码拆成两行）
@@ -1153,13 +1232,19 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
 
             cur_unit = {'title': title, 'page': page_num, 'lessons': []}
             units.append(cur_unit)
+            cur_group = None
             cur_l2 = None
             continue
 
         # 判断栏目还是课文
         # ★ is_lesson 优先：编号开头的标题一定是课文
         is_lesson = rules['lesson_re'].match(title) is not None
-        is_group = (not is_lesson) and any(kw in title for kw in rules['group_kws'])
+        # ★ 短关键词(≤2字)用精确匹配，长关键词用子串匹配
+        # 避免"写作指导"被误判为栏目（含"写作"子串）
+        is_group = (not is_lesson) and any(
+            (len(kw) <= 2 and title == kw) or (len(kw) > 2 and kw in title)
+            for kw in rules['group_kws']
+        )
 
         # 无页码的非课文非栏目短行 → 跳过
         if book_page is None and not is_lesson and not is_group and 2 <= len(title) <= 40:
@@ -1193,31 +1278,48 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
             units.append(cur_unit)
 
         if is_group:
+            # ★ L2 栏目：课文嵌套在其 children 下
             cur_l2 = None
-            # ★ 栏目不需要页码（用户需求：栏目只是分类标签）
-            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': None})
-        elif is_lesson:
-            cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
-            cur_unit['lessons'].append(cur_l2)
+            cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
+            cur_unit['lessons'].append(cur_group)
         else:
-            # 无编号短标题 → 子篇目或独立 lesson
-            if cur_l2 is not None:
-                cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': real_page})
-            else:
+            # ★ 课文添加到当前栏目的 children 下
+            # 如果没有栏目（如数学），直接添加到 unit.lessons
+            target_list = cur_group['children'] if cur_group else cur_unit['lessons']
+            if is_lesson:
                 cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
-                cur_unit['lessons'].append(cur_l2)
+                target_list.append(cur_l2)
+            else:
+                # 无编号短标题 → 子篇目或独立 lesson
+                if cur_l2 is not None:
+                    cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': real_page})
+                else:
+                    cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
+                    target_list.append(cur_l2)
+
+    def _has_lesson(lessons):
+        """检查 lessons 列表（含嵌套 group.children）是否有课文。"""
+        for l in lessons:
+            if l['type'] == 'lesson':
+                return True
+            if l['type'] == 'group' and any(c['type'] == 'lesson' for c in l.get('children', [])):
+                return True
+        return False
 
     # 英语占位
     if rules['name'] == '英语':
         for u in units:
-            if not any(l['type'] == 'lesson' for l in u['lessons']):
+            if not _has_lesson(u['lessons']):
                 u['lessons'].append({
                     'title': u['title'], 'type': 'lesson',
                     'startPage': u['page'], 'children': []
                 })
 
+    # ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（阅读在前，课文归入栏目）
+    _reorganize_unit_lessons(units, rules)
+
     # 过滤无课文的单元
-    units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
+    units = [u for u in units if _has_lesson(u['lessons'])]
     if units:
         _compute_endpages_v2(units, total_pages)
     return units if units else None
