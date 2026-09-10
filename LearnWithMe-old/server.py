@@ -854,10 +854,10 @@ def extract_toc_with_ocr(pdf_bytes):
         top_fonts = sorted(font_info.items(), key=lambda x: -x[1])[:5]
         print(f"[OCR] 字体分布(top5): {top_fonts}", flush=True)
 
-    # 学科检测
+    # 学科检测（初始，用可提取文字）
     subject_key = _detect_subject(page_lines)
     rules = SUBJECT_RULES[subject_key]
-    print(f"[OCR] 学科检测: {rules['name']} (key={subject_key})", flush=True)
+    print(f"[OCR] 学科检测(初始): {rules['name']} (key={subject_key})", flush=True)
 
     # 先试 PDF 自带书签
     existing_toc = doc.get_toc()
@@ -917,6 +917,17 @@ def extract_toc_with_ocr(pdf_bytes):
                 ocr_text_all += line + '\n'
 
     doc.close()
+
+    # ★ 用 OCR 文本重新检测学科（OCR 文本比 CID 噪声更可靠）
+    ocr_scores = {}
+    for subj, kws in SUBJECT_DETECT_KEYWORDS.items():
+        score = sum(ocr_text_all.count(kw) for kw in kws)
+        ocr_scores[subj] = score
+    ocr_best = max(ocr_scores.items(), key=lambda x: x[1])
+    if ocr_best[1] > 0:
+        subject_key = ocr_best[0]
+        rules = SUBJECT_RULES[subject_key]
+        print(f"[OCR] 学科检测(OCR修正): {rules['name']} (key={subject_key}, 分数={dict(ocr_scores)})", flush=True)
 
     if not ocr_lines:
         print("[OCR] ❌ OCR 未识别到任何文字", flush=True)
@@ -991,6 +1002,36 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
         i += 1
 
     print(f"[OCR] 合并后目录行数: {len(merged_lines)}", flush=True)
+
+    # ★ 拆分合并行：OCR 可能把 "第一单元 阅读 1 春/朱自清 2" 合并成一行
+    # 需要拆成：单元行 "第一单元" + 课文行 "1 春/朱自清 2"
+    split_lines = []
+    for text, page in merged_lines:
+        text = text.strip()
+        # 检查是否同时包含单元标题和课文编号
+        unit_match = rules['unit_re'].search(text)
+        if unit_match:
+            unit_part = unit_match.group()
+            rest = text[unit_match.end():].strip()
+            # 在 rest 中查找课文编号开头
+            lesson_match = rules['lesson_re'].match(rest) if rest else None
+            if lesson_match:
+                # 拆分：单元行 + 课文行
+                split_lines.append((unit_part, page))
+                # rest 可能含 "阅读" 前缀，去掉
+                lesson_text = rest
+                # 去掉 "阅读" 等前缀词
+                for prefix in ['阅读', '阅读与写作', '写作', '口语交际']:
+                    if lesson_text.startswith(prefix):
+                        lesson_text = lesson_text[len(prefix):].strip()
+                        break
+                if lesson_text:
+                    split_lines.append((lesson_text, page))
+                continue
+        split_lines.append((text, page))
+
+    merged_lines = split_lines
+    print(f"[OCR] 拆分后目录行数: {len(merged_lines)}", flush=True)
 
     for idx, (text, page) in enumerate(merged_lines):
         text = text.strip()

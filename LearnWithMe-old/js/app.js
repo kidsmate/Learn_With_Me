@@ -3530,11 +3530,16 @@ async function extractTocFromTocPages(pdf, totalPages) {
 async function extractTocFromServer(arrayBuffer) {
   try {
     console.log('[服务端提取] 发送 PDF 到服务端 API...');
+    // OCR 截图方案可能需要较长时间，设 120 秒超时
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
     const resp = await fetch('/api/extract-toc', {
       method: 'POST',
       body: arrayBuffer,
       headers: { 'Content-Type': 'application/pdf' },
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
     if (!resp.ok) {
       console.warn('[服务端提取] HTTP', resp.status);
       return null;
