@@ -1011,26 +1011,35 @@ function renderBookReader(units, ti, point) {
   });
   if (matchedU < 0) { matchedU = 0; matchedL = 0; }
 
-  // 构建所有可导航项的扁平列表（lesson + sublesson，group 不参与导航）
-  // ★ 支持嵌套结构：group.children 下的 lesson
+  // 构建所有可导航项的扁平列表
+  // ★ 两种 group 都要覆盖：
+  //   (A) 容器学科：group 有 children → children 里的 lesson 入表
+  //   (B) 非容器学科：group 自己带 startPage、没 children → group 本身就是一条可导航项
   const allLessons = [];
   units.forEach((u, ui) => {
     u.lessons.forEach((l, li) => {
       if (l.type === 'group') {
-        // 栏目下的课文
-        (l.children || []).forEach((cl, cli) => {
-          if (cl.type === 'lesson') {
-            allLessons.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: -1, ...cl });
+        const kids = (l.children || []).filter(cl => cl.type === 'lesson');
+        if (kids.length > 0) {
+          // 容器学科：把 children 里的课文入表
+          kids.forEach((cl, cli) => {
+            allLessons.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: -1, __isGroupSelf: false, ...cl });
             (cl.children || []).forEach((sub, si) => {
-              allLessons.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: si, ...sub });
+              allLessons.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: si, __isGroupSelf: false, ...sub });
             });
-          }
-        });
+          });
+        } else if (l.startPage || l.page) {
+          // 非容器学科：group 自己带页码 → 作为独立可导航项
+          allLessons.push({
+            unitTitle: u.title, ui, li, gi: -1, subIdx: -1, __isGroupSelf: true,
+            ...l, startPage: l.startPage || l.page
+          });
+        }
       } else if (l.type === 'lesson') {
         // 无栏目的直接课文（如数学）
-        allLessons.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, ...l });
+        allLessons.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, __isGroupSelf: false, ...l });
         (l.children || []).forEach((sub, si) => {
-          allLessons.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: si, ...sub });
+          allLessons.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: si, __isGroupSelf: false, ...sub });
         });
       }
     });
@@ -1056,18 +1065,25 @@ function renderBookReader(units, ti, point) {
     html += `<div class="tb-toc-unit-label">${escapeHtml(u.title)}</div>`;
     u.lessons.forEach((l, li) => {
       if (l.type === 'group') {
-        // ★ L2 栏目标题（阅读/写作），点击跳转至栏目下第一篇课文
-        const firstChildIdx = (l.children || []).findIndex(cl => cl.type === 'lesson');
+        // ★ L2 栏目标题（阅读/写作/科学世界/阅读与思考 等），点击跳转
+        // 两种情况：
+        //   A) 容器学科（语文/道法/历史）：group 有 children → 跳第一篇课文
+        //   B) 非容器学科（物理/化学等）：group 自己有 startPage → 跳自己
         let groupFIdx = -1;
-        if (firstChildIdx >= 0) {
-          groupFIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === firstChildIdx && x.subIdx === -1);
+        const kids = (l.children || []).filter(cl => cl.type === 'lesson');
+        if (kids.length > 0) {
+          groupFIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === 0 && x.subIdx === -1);
+        } else if (l.startPage || l.page) {
+          groupFIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.__isGroupSelf);
         }
+        const pageForGroup = l.startPage || l.page;
+        const groupPageTag = pageForGroup ? `<span class="tb-toc-page">${pageForGroup}</span>` : '';
         if (groupFIdx >= 0) {
-          html += `<div class="tb-toc-group clickable" onclick="selectBookLesson('${ti}', ${groupFIdx})">${escapeHtml(l.title)}</div>`;
+          html += `<div class="tb-toc-group clickable" id="tb-toc-item-${ti}-${groupFIdx}" onclick="selectBookLesson('${ti}', ${groupFIdx})"><span>${escapeHtml(l.title)}</span>${groupPageTag}</div>`;
         } else {
           html += `<div class="tb-toc-group">${escapeHtml(l.title)}</div>`;
         }
-        // ★ L3 栏目下的课文，可点击
+        // ★ L3 栏目下的课文（容器学科才有），可点击
         (l.children || []).forEach((cl, cli) => {
           if (cl.type !== 'lesson') return;
           const fIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === cli && x.subIdx === -1);
@@ -4381,7 +4397,7 @@ function renderSettings() {
 }
 
 function saveSettings() {
-  state.nickname = document.getElementById('settingNickname').value.trim() || '安冉';
+  state.nickname = document.getElementById('settingNickname').value.trim() || '同学';
   state.dailyGoal = parseInt(document.getElementById('settingDailyGoal').value) || 3;
   state.currentGrade = document.getElementById('settingGrade').value || '七年级上';
   saveData(state);

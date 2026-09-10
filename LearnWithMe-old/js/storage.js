@@ -3,7 +3,7 @@ const STORAGE_KEY = 'anran_learning_data';
 
 // 默认数据结构
 const DEFAULT_DATA = {
-  nickname: '安冉',
+  nickname: '同学',
   dailyGoal: 3,
   points: 0,
   streak: 0,
