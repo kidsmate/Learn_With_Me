@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 应用名称 -->
+    <key>CFBundleDisplayName</key>
+    <string>LearnWithMe</string>
+
+    <!-- 横竖屏都支持 -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UISupportedInterfaceOrientations~ipad</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!-- 状态栏样式 -->
+    <key>UIStatusBarStyle</key>
+    <string>UIStatusBarStyleDefault</string>
+    <key>UIViewControllerBasedStatusBarAppearance</key>
+    <false/>
+
+    <!-- ===== App Transport Security ===== -->
+    <!-- 本地模式加载 file:// 资源不受 ATS 限制；
+         但远程模式访问 http://局域网 IP 需要此例外。
+         发布上架前可改为 false 并用 NSExceptionDomains 白名单具体 IP。 -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <!-- 发布时更安全的写法（仅放行你的局域网 IP）：
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>10.76.189.67</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+        </dict>
+        -->
+    </dict>
+
+    <!-- 防止锁屏时 App 暂停（学习/视频场景更友好） -->
+    <key>UIRequiresFullScreen</key>
+    <false/>
+
+    <!-- 应用图标：把 www/icons/icon-512.png 拖进 Assets.xcassets 的 AppIcon 即可 -->
+</dict>
+</plist>

@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="安冉的学习助手">
+  <meta name="apple-mobile-web-app-title" content="LearnWithMe">
   <meta name="theme-color" content="#6C5CE7">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" href="icons/icon-192.png">
-  <title>安冉的学习助手</title>
-  <link rel="stylesheet" href="css/style.css?v=20260909">
-  <!-- PDF.js for textbook PDF processing -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <title>LearnWithMe</title>
+  <link rel="stylesheet" href="css/style.css?v=20260909m">
+  <!-- PDF.js for textbook PDF processing（本地化，支持 iPad 离线运行）-->
+  <script src="libs/pdf.min.js"></script>
   <!-- pdf-lib for adding bookmarks to PDFs -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <script src="libs/pdf-lib.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -23,7 +23,7 @@
     <header class="topbar">
       <div class="topbar-left">
         <div class="app-logo">🌱</div>
-        <div class="app-title">安冉的学习助手</div>
+        <div class="app-title">LearnWithMe</div>
       </div>
       <div class="topbar-right">
         <div class="points-badge" id="pointsBadge" title="当前积分">
@@ -44,6 +44,7 @@
         <div class="page-header">
           <h1>今日学习</h1>
           <div class="date-text" id="todayDate"></div>
+          <button class="header-settings-btn" onclick="navigate('settings')" title="设置">⚙️</button>
         </div>
 
         <!-- Greeting & daily quote -->
@@ -130,8 +131,8 @@
           <button class="learn-tab active" data-section="summary">📝 知识总结</button>
           <button class="learn-tab" data-section="keypoints">🔑 核心要点</button>
           <button class="learn-tab" data-section="textbook">📖 教材内容</button>
+          <button class="learn-tab" data-section="exercise">🏅 中考真题</button>
           <button class="learn-tab" data-section="video">🎬 教学视频</button>
-          <button class="learn-tab" data-section="exercise">✏️ 习题练习</button>
         </div>
 
         <!-- Section Contents -->
@@ -162,7 +163,7 @@
         </div>
       </section>
 
-      <!-- ===== Rewards Page ===== -->
+      <!-- ===== Rewards Page (merged with Wishlist) ===== -->
       <section class="page" id="page-rewards">
         <div class="page-header">
           <h1>激励中心</h1>
@@ -172,6 +173,7 @@
         <div class="rewards-tabs">
           <button class="tab-btn active" data-tab="positive">🎉 正向激励</button>
           <button class="tab-btn" data-tab="negative">⚖️ 负向惩罚</button>
+          <button class="tab-btn" data-tab="wishlist">🌟 心愿清单</button>
         </div>
 
         <div class="tab-content active" id="tab-positive">
@@ -187,18 +189,14 @@
           <div class="section-title">惩罚记录</div>
           <div class="records-list" id="punishRecords"></div>
         </div>
-      </section>
 
-      <!-- ===== Wishlist Page ===== -->
-      <section class="page" id="page-wishlist">
-        <div class="page-header">
-          <h1>心愿清单</h1>
-          <button class="btn-add" id="btnAddWish">+ 添加心愿</button>
+        <div class="tab-content" id="tab-wishlist">
+          <div class="wish-summary">
+            <div class="wish-points">可用积分：<span id="wishPoints">0</span> 🪙</div>
+            <button class="btn-add" id="btnAddWish">+ 添加心愿</button>
+          </div>
+          <div class="wishlist-grid" id="wishlistGrid"></div>
         </div>
-        <div class="wish-summary">
-          <div class="wish-points">可用积分：<span id="wishPoints">0</span> 🪙</div>
-        </div>
-        <div class="wishlist-grid" id="wishlistGrid"></div>
       </section>
 
       <!-- ===== Textbooks Page ===== -->
@@ -239,6 +237,20 @@
           </div>
           <div class="setting-item">
             <div class="setting-info">
+              <div class="setting-name">当前年级</div>
+              <div class="setting-desc">仅展示该年级的学科与单元（按 PDF 教材目录）</div>
+            </div>
+            <select class="setting-input" id="settingGrade">
+              <option value="七年级上">七年级上学期</option>
+              <option value="七年级下">七年级下学期</option>
+              <option value="八年级上">八年级上学期</option>
+              <option value="八年级下">八年级下学期</option>
+              <option value="九年级上">九年级上学期</option>
+              <option value="九年级下">九年级下学期</option>
+            </select>
+          </div>
+          <div class="setting-item">
+            <div class="setting-info">
               <div class="setting-name">每日目标</div>
               <div class="setting-desc">每天学习的知识点数量</div>
             </div>
@@ -272,21 +284,13 @@
         <div class="tab-icon">📖</div>
         <div class="tab-label">学科</div>
       </button>
-      <button class="tab-item" data-page="rewards">
-        <div class="tab-icon">🎁</div>
-        <div class="tab-label">激励</div>
-      </button>
-      <button class="tab-item" data-page="wishlist">
-        <div class="tab-icon">🌟</div>
-        <div class="tab-label">心愿</div>
-      </button>
       <button class="tab-item" data-page="textbooks">
         <div class="tab-icon">📚</div>
         <div class="tab-label">教材</div>
       </button>
-      <button class="tab-item" data-page="settings">
-        <div class="tab-icon">⚙️</div>
-        <div class="tab-label">设置</div>
+      <button class="tab-item" data-page="rewards">
+        <div class="tab-icon">🎁</div>
+        <div class="tab-label">激励</div>
       </button>
     </nav>
   </div>
@@ -371,13 +375,13 @@
   <!-- Toast -->
   <div class="toast" id="toast"></div>
 
-  <script src="js/data.js?v=20260909"></script>
-  <script src="js/learning.js?v=20260909"></script>
-  <script src="js/storage.js?v=20260909"></script>
-  <script src="js/app.js?v=20260909"></script>
+  <script src="js/data.js?v=20260909m"></script>
+  <script src="js/learning.js?v=20260909m"></script>
+  <script src="js/storage.js?v=20260909m"></script>
+  <script src="js/app.js?v=20260909m"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js?v=20260909').then(reg => {
+      navigator.serviceWorker.register('sw.js?v=20260909m').then(reg => {
         // 检查是否有新版本的 Service Worker
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;
