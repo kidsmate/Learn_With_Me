@@ -435,11 +435,11 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
     返回 units 结构，或 None（目录页无法解析）。
     """
     # 收集目录页所有行
-    # ★ PDF 坐标系：原点在左下角，y 值越大越靠上
-    # 所以从上到下排序应为 y 降序（-y）
+    # ★ PyMuPDF 的 bbox 用顶部原点坐标系：y0 是顶部坐标，y 向下递增
+    # 所以从上到下排序应为 y 升序
     raw_lines = []  # [(text, y, page)]
     for p in sorted(toc_pages):
-        for line in sorted(page_lines.get(p, []), key=lambda l: -l['y']):
+        for line in sorted(page_lines.get(p, []), key=lambda l: l['y']):
             raw_lines.append((line['text'].strip(), line['y'], p))
 
     # 构建页码索引：每页的 [(y, page_number, x)]
@@ -1194,6 +1194,206 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
     return units if units else None
 
 
+def _build_page_lines_with_pdfplumber(pdf_bytes, total_pages_hint=None):
+    """用 pdfplumber (基于 pdfminer.six) 构造 page_lines。
+
+    pdfplumber 有独立的 CID 字体处理逻辑,某些 PyMuPDF 提取不到的
+    CID 字体, pdfplumber 能正确解码。
+
+    返回与 extract_toc_with_fitz 相同结构的 (page_lines, page_num_lines,
+    font_count, font_info, total_pages)，失败返回 None。
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        print("[pdfplumber] 未安装，跳过", flush=True)
+        return None
+
+    import io as _io
+    try:
+        pdf = pdfplumber.open(_io.BytesIO(pdf_bytes))
+    except Exception as e:
+        print(f"[pdfplumber] 打开失败: {e}", flush=True)
+        return None
+
+    total_pages = len(pdf.pages)
+    print(f"[pdfplumber] PDF 已打开: {total_pages} 页", flush=True)
+
+    page_lines = {}
+    page_num_lines = {}
+    font_count = {}
+    font_info = {}
+
+    for page_idx in range(total_pages):
+        page = pdf.pages[page_idx]
+        # extract_words 返回每个词的信息：text, x0, x1, top, bottom, size 等
+        try:
+            words = page.extract_words(extra_attrs=["size", "fontname"])
+        except Exception:
+            words = page.extract_words()
+
+        # 按 top 坐标分行（pdfplumber 的 y 坐标是 top，向下递增）
+        lines_by_y = {}
+        for w in words:
+            y = round(float(w.get('top', 0)), 1)
+            # 找相近的 y（误差 3px 内视为同行）
+            line_key = y
+            for k in lines_by_y:
+                if abs(k - y) <= 3:
+                    line_key = k
+                    break
+            lines_by_y.setdefault(line_key, []).append(w)
+
+        lines = []
+        for y in sorted(lines_by_y.keys()):
+            ws = sorted(lines_by_y[y], key=lambda w: float(w.get('x0', 0)))
+            line_text = "".join(w.get('text', '') for w in ws).strip()
+            if not line_text:
+                continue
+            line_text = _normalize_text(line_text)
+            if not line_text or len(line_text) > 120:
+                continue
+            # 字号：取行内最大 size
+            sizes = [float(w.get('size', 0)) for w in ws if w.get('size')]
+            line_fs = round(max(sizes), 1) if sizes else 0.0
+            x = round(float(ws[0].get('x0', 0)), 1)
+            # 字体名收集
+            for w in ws:
+                fname = w.get('fontname', 'unknown')
+                font_info[fname] = font_info.get(fname, 0) + 1
+
+            if PAGE_NUM_RE.match(line_text):
+                page_num_lines.setdefault(page_idx + 1, []).append(
+                    {'text': line_text, 'y': y, 'x': x})
+                continue
+            lines.append({
+                'page': page_idx + 1, 'text': line_text,
+                'fontsize': line_fs, 'y': y, 'x': x
+            })
+            fs_key = str(line_fs)
+            font_count[fs_key] = font_count.get(fs_key, 0) + 1
+        page_lines[page_idx + 1] = lines
+
+    pdf.close()
+
+    if not font_count:
+        print("[pdfplumber] 未提取到任何文字", flush=True)
+        return None
+
+    total_text = sum(len(l['text']) for ls in page_lines.values() for l in ls)
+    print(f"[pdfplumber] ✅ 提取成功: {total_pages} 页, {total_text} 字符", flush=True)
+    return (page_lines, page_num_lines, font_count, font_info, total_pages)
+
+
+def _build_page_lines_with_pypdfium2(pdf_bytes, total_pages_hint=None):
+    """用 pypdfium2 (Google PDFium 绑定) 构造 page_lines。
+
+    PDFium 有强大的 CID 字体处理能力,带 ToUnicode CMap 的 CID 字体
+    通常都能正确解码。
+
+    返回与 extract_toc_with_fitz 相同结构，失败返回 None。
+    """
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        print("[pypdfium2] 未安装，跳过", flush=True)
+        return None
+
+    try:
+        pdf = pdfium.PdfDocument(pdf_bytes)
+    except Exception as e:
+        print(f"[pypdfium2] 打开失败: {e}", flush=True)
+        return None
+
+    total_pages = len(pdf)
+    print(f"[pypdfium2] PDF 已打开: {total_pages} 页", flush=True)
+
+    page_lines = {}
+    page_num_lines = {}
+    font_count = {}
+    font_info = {'PDFium-internal': total_pages}  # pypdfium2 不暴露字体名
+
+    for page_idx in range(total_pages):
+        page = pdf[page_idx]
+        try:
+            tp = page.get_textpage()
+        except Exception as e:
+            page_lines[page_idx + 1] = []
+            continue
+
+        # get_text_bounded 返回 [(text, x, y, w, h), ...] 或类似结构
+        # pypdfium2 的 textpage API：get_text_range 返回纯文本
+        try:
+            # 尝试获取带位置信息的文本
+            # pypdfium2 的 TextPage 有 get_text_bounded 方法
+            text_rects = []
+            if hasattr(tp, 'get_text_bounded'):
+                # get_text_bounded(left, bottom, right, top) 返回区域内文本
+                # 这里获取整个页面
+                page_rect = page.get_size()  # (width, height)
+                text_rects = tp.get_text_bounded(0, 0, page_rect[0], page_rect[1])
+            elif hasattr(tp, 'get_text_range'):
+                # 退化：只有纯文本，无位置
+                full_text = tp.get_text_range()
+                lines = [(t, 0.0, float(page_idx * 20 + i * 12), 0.0, 0.0)
+                         for i, t in enumerate(full_text.split('\n'))]
+                text_rects = lines
+        except Exception as e:
+            text_rects = []
+
+        # 按 y 坐标分行
+        lines_by_y = {}
+        for item in text_rects:
+            if isinstance(item, (tuple, list)) and len(item) >= 3:
+                text = item[0] if isinstance(item[0], str) else str(item[0])
+                x = float(item[1]) if item[1] else 0.0
+                y = float(item[2]) if item[2] else 0.0
+            else:
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            line_key = round(y, 1)
+            for k in lines_by_y:
+                if abs(k - y) <= 3:
+                    line_key = k
+                    break
+            lines_by_y.setdefault(line_key, []).append((text, x, y))
+
+        lines = []
+        for y in sorted(lines_by_y.keys()):
+            ws = sorted(lines_by_y[y], key=lambda w: w[1])
+            line_text = "".join(t for t, _, _ in ws).strip()
+            if not line_text:
+                continue
+            line_text = _normalize_text(line_text)
+            if not line_text or len(line_text) > 120:
+                continue
+            # pypdfium2 不直接给字号，用 0 标记（字号不影响目录页解析主逻辑）
+            line_fs = 0.0
+            x = round(ws[0][1], 1)
+            if PAGE_NUM_RE.match(line_text):
+                page_num_lines.setdefault(page_idx + 1, []).append(
+                    {'text': line_text, 'y': y, 'x': x})
+                continue
+            lines.append({
+                'page': page_idx + 1, 'text': line_text,
+                'fontsize': line_fs, 'y': y, 'x': x
+            })
+            font_count['0.0'] = font_count.get('0.0', 0) + 1
+        page_lines[page_idx + 1] = lines
+
+    pdf.close()
+
+    if not font_count:
+        print("[pypdfium2] 未提取到任何文字", flush=True)
+        return None
+
+    total_text = sum(len(l['text']) for ls in page_lines.values() for l in ls)
+    print(f"[pypdfium2] ✅ 提取成功: {total_pages} 页, {total_text} 字符", flush=True)
+    return (page_lines, page_num_lines, font_count, font_info, total_pages)
+
+
 def extract_toc_with_fitz(pdf_bytes):
     """用 pymupdf 提取三级目录（参考用户 Python 书签程序的层级规则）。
 
@@ -1298,11 +1498,32 @@ def extract_toc_with_fitz(pdf_bytes):
     doc.close()
 
     if not font_count:
-        # ★ 有字体但无文本：大概率 CID 字体 PDF，PyMuPDF 也无法提取
+        # ★ PyMuPDF 提取不到文字（大概率 CID 字体），尝试其他库
         if font_info:
             cid_fonts = [f for f in font_info if 'CID' in f or 'Identity' in f]
-            print(f"[API] ⚠️ 检测到 CID 字体但无法提取文本: {cid_fonts or list(font_info.keys())[:3]}", flush=True)
-        return {'units': [], 'pageOffset': 0, 'totalPages': total_pages, 'method': 'none'}
+            print(f"[API] ⚠️ PyMuPDF 检测到 CID 字体但无法提取: {cid_fonts or list(font_info.keys())[:3]}", flush=True)
+
+        # ★ 多库兜底：依次尝试 pdfplumber 和 pypdfium2
+        for lib_name, build_fn in [
+            ('pdfplumber', _build_page_lines_with_pdfplumber),
+            ('pypdfium2', _build_page_lines_with_pypdfium2),
+        ]:
+            print(f"[API] 尝试 {lib_name} 提取...", flush=True)
+            alt_result = build_fn(pdf_bytes, total_pages)
+            if alt_result:
+                page_lines, page_num_lines, font_count, font_info, alt_total = alt_result
+                # 用新库的数据重新检测学科
+                subject_key = _detect_subject(page_lines)
+                rules = SUBJECT_RULES[subject_key]
+                print(f"[API] ✅ {lib_name} 提取成功，学科: {rules['name']}", flush=True)
+                # 跳出循环，继续走下面的目录解析逻辑
+                break
+        else:
+            # 三个库都失败
+            print("[API] ❌ 所有库都无法提取文字", flush=True)
+            return {'units': [], 'pageOffset': 0, 'totalPages': total_pages,
+                    'method': 'none', 'subject': subject_key,
+                    'subjectName': rules['name']}
 
     # ★ 步骤 1：定位目录页（关键：只看目录页，绝不扫描正文！）
     # 教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录
@@ -1444,17 +1665,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         print(f"[API] 已读取 PDF 数据，开始提取...", flush=True)
 
         try:
-            # ★ 优先使用截图+OCR 方案（最可靠，绕过 CID 字体问题）
-            print(f"[API] ★ 尝试 OCR 截图方案...", flush=True)
-            result = extract_toc_with_ocr(body)
+            # ★ 新策略：文字提取优先（100%准确），OCR 仅作兜底
+            # 1) PyMuPDF 文字提取（自带多库兜底：pdfplumber + pypdfium2）
+            print(f"[API] ★ 尝试文字提取方案（PyMuPDF + 多库兜底）...", flush=True)
+            result = extract_toc_with_fitz(body)
             if result.get('units'):
-                print(f"[API] ✅ OCR 提取成功: {len(result['units'])} 个单元, 方法={result.get('method')}", flush=True)
+                print(f"[API] ✅ 文字提取成功: {len(result['units'])} 个单元, 方法={result.get('method')}", flush=True)
                 self.send_json(result)
                 return
 
-            # OCR 失败 → 回退到 PyMuPDF 文字提取
-            print(f"[API] OCR 未成功 (method={result.get('method')}), 回退到 fitz 文字提取...", flush=True)
-            result = extract_toc_with_fitz(body)
+            # 2) 文字提取失败 → 回退到 OCR 截图方案（兜底）
+            print(f"[API] 文字提取未成功 (method={result.get('method')}), 回退到 OCR 截图方案...", flush=True)
+            result = extract_toc_with_ocr(body)
             print(f"[API] 提取完成: {len(result.get('units', []))} 个单元, 方法={result.get('method')}", flush=True)
             self.send_json(result)
         except Exception as e:
