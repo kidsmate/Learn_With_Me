@@ -8,6 +8,15 @@ import io
 import unicodedata
 from urllib.parse import unquote
 
+# PyMuPDF 兼容导入：新版推荐 pymupdf，旧版用 fitz
+try:
+    import pymupdf as fitz
+except ImportError:
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+
 PORT = 8080
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -792,7 +801,6 @@ def extract_toc_with_ocr(pdf_bytes):
 
     返回与 extract_toc_with_fitz 相同结构的 result dict。
     """
-    import fitz
 
     doc = None
     for attempt in range(2):
@@ -1013,18 +1021,17 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
         if unit_match:
             unit_part = unit_match.group()
             rest = text[unit_match.end():].strip()
-            # 在 rest 中查找课文编号开头
-            lesson_match = rules['lesson_re'].match(rest) if rest else None
+            # 先去掉 "阅读" 等前缀词，再检查课文编号
+            lesson_text = rest
+            for prefix in ['阅读与写作', '阅读', '写作', '口语交际', '语文园地']:
+                if lesson_text.startswith(prefix):
+                    lesson_text = lesson_text[len(prefix):].strip()
+                    break
+            # 在清理后的 rest 中查找课文编号开头
+            lesson_match = rules['lesson_re'].match(lesson_text) if lesson_text else None
             if lesson_match:
                 # 拆分：单元行 + 课文行
                 split_lines.append((unit_part, page))
-                # rest 可能含 "阅读" 前缀，去掉
-                lesson_text = rest
-                # 去掉 "阅读" 等前缀词
-                for prefix in ['阅读', '阅读与写作', '写作', '口语交际']:
-                    if lesson_text.startswith(prefix):
-                        lesson_text = lesson_text[len(prefix):].strip()
-                        break
                 if lesson_text:
                     split_lines.append((lesson_text, page))
                 continue
@@ -1163,7 +1170,6 @@ def extract_toc_with_fitz(pdf_bytes):
     跳过：封面（靠 L3 必须有 L2 父规则）、版权页、目录页、页眉页脚。
     页码即真实 PDF 页码，pageOffset=0，点击书签直达正文。
     """
-    import fitz
 
     # ★ 重试逻辑：某些 PDF 首次打开可能因结构异常失败
     doc = None
