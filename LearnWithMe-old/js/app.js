@@ -3339,24 +3339,6 @@ async function extractTocFromTocPages(pdf, totalPages) {
   // 英语目录页码引用模式（如 "Page S1"、"Page 5"）
   const pageRefRe = /^Page\s+(S?\d+)/i;
 
-  // ★ 检测是否为"栏目容器型"学科（语文/道德与法治/历史）
-  // 特征：目录中同时出现"阅读"/"写作"等栏目关键词，且课文编号是纯数字开头（如"1 春"）
-  // 理科类（物理/化学/地理等）的课文是"第一节""课题1"等，栏目是穿插的独立条目
-  let isContainerSubject = false;
-  {
-    let hasReadingGroup = false;
-    let hasNumericLesson = false;
-    for (const p of Object.keys(pageLines).map(Number).sort((a, b) => a - b)) {
-      for (const line of pageLines[p]) {
-        const t = (line.text || '').trim();
-        if (t === '阅读' || t === '写作' || t === '口语交际' || t === '综合性学习') hasReadingGroup = true;
-        if (/^\d+\*?\s+[^\d]/.test(t) || /^\d+\*?\s*[.．、]\s*\S/.test(t)) hasNumericLesson = true;
-      }
-    }
-    isContainerSubject = hasReadingGroup && hasNumericLesson;
-    console.log('[目录页提取] 容器型学科检测:', isContainerSubject, '(有栏目:', hasReadingGroup, ', 数字编号课文:', hasNumericLesson, ')');
-  }
-
   // 圈码→数字
   function circledToNum(text) {
     text = text.trim();
@@ -3484,6 +3466,25 @@ async function extractTocFromTocPages(pdf, totalPages) {
     return null;
   }
   console.log('[目录页提取] 目录页:', tocPages);
+
+  // ★ 检测是否为"栏目容器型"学科（语文/道德与法治/历史）
+  // 特征：目录页中同时出现"阅读"/"写作"等栏目关键词，且课文编号是纯数字开头（如"1 春"）
+  // 理科类（物理/化学/地理等）的课文是"第一节""课题1"等，栏目是穿插的独立条目
+  // ★ 注意：只扫描目录页（tocPages），绝不扫描正文页！
+  let isContainerSubject = false;
+  {
+    let hasReadingGroup = false;
+    let hasNumericLesson = false;
+    for (const p of tocPages) {
+      for (const line of (pageLines[p] || [])) {
+        const t = (line.text || '').trim();
+        if (t === '阅读' || t === '写作' || t === '口语交际' || t === '综合性学习') hasReadingGroup = true;
+        if (/^\d+\*?\s+[^\d]/.test(t) || /^\d+\*?\s*[.．、]\s*\S/.test(t)) hasNumericLesson = true;
+      }
+    }
+    isContainerSubject = hasReadingGroup && hasNumericLesson;
+    console.log('[目录页提取] 容器型学科检测:', isContainerSubject, '(有栏目:', hasReadingGroup, ', 数字编号课文:', hasNumericLesson, ')');
+  }
 
   // ★ 物理页码偏移：封面=1, 扉页=2, 目录=3+, 正文=目录后
   // offset = 2 + 目录页数，物理页 = 印刷页 + offset
