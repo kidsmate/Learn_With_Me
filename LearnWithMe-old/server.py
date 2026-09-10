@@ -779,6 +779,338 @@ def _find_toc_pages(page_lines, rules, total_pages):
     return toc_pages
 
 
+def extract_toc_with_ocr(pdf_bytes):
+    """截图 + OCR 方案：渲染目录页为高清图片，用 Tesseract 识别文字，
+    再解析为三级目录结构。
+
+    流程：
+      1. PyMuPDF 打开 PDF
+      2. 渲染第4~7页为高分辨率图片（DPI=300）
+      3. Tesseract OCR 识别中文（chi_sim + eng）
+      4. 解析 OCR 文本为结构化目录（复用 unit/lesson/sublesson 逻辑）
+      5. 用正文标题搜索定位真实 PDF 页码（复用 _relocate_units_by_body_search）
+
+    返回与 extract_toc_with_fitz 相同结构的 result dict。
+    """
+    import fitz
+
+    doc = None
+    for attempt in range(2):
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            break
+        except Exception as e:
+            if attempt == 0:
+                print(f"[OCR] ⚠️ fitz.open 第1次失败: {e}，正在重试...", flush=True)
+                continue
+            print(f"[OCR] ❌ fitz.open 第2次失败: {e}", flush=True)
+            raise
+
+    total_pages = len(doc)
+    print(f"[OCR] PDF 已打开: {total_pages} 页", flush=True)
+
+    # 同时扫描全文行（供学科检测和正文匹配复用）
+    page_lines = {}
+    font_count = {}
+    font_info = {}
+
+    for page_idx in range(total_pages):
+        page = doc[page_idx]
+        blocks = page.get_text("dict")["blocks"]
+        lines = []
+        for blk in blocks:
+            if blk.get("type", 0) != 0:
+                continue
+            for line in blk.get("lines", []):
+                line_text = ""
+                line_max_font = 0.0
+                line_y = 0.0
+                line_x = 0.0
+                for span in line.get("spans", []):
+                    if not span["text"].strip():
+                        continue
+                    line_text += span["text"]
+                    fs = round(float(span["size"]), 1)
+                    if fs > line_max_font:
+                        line_max_font = fs
+                    line_y = float(span["bbox"][1])
+                    line_x = float(span["bbox"][0])
+                    fname = span.get("font", "unknown")
+                    font_info[fname] = font_info.get(fname, 0) + 1
+                line_text = _normalize_text(line_text).strip()
+                if not line_text or len(line_text) > 120:
+                    continue
+                if PAGE_NUM_RE.match(line_text):
+                    continue
+                lines.append({
+                    'page': page_idx + 1, 'text': line_text,
+                    'fontsize': line_max_font, 'y': round(line_y, 1), 'x': round(line_x, 1)
+                })
+                fs_key = str(line_max_font)
+                font_count[fs_key] = font_count.get(fs_key, 0) + 1
+        page_lines[page_idx + 1] = lines
+
+    if font_info:
+        top_fonts = sorted(font_info.items(), key=lambda x: -x[1])[:5]
+        print(f"[OCR] 字体分布(top5): {top_fonts}", flush=True)
+
+    # 学科检测
+    subject_key = _detect_subject(page_lines)
+    rules = SUBJECT_RULES[subject_key]
+    print(f"[OCR] 学科检测: {rules['name']} (key={subject_key})", flush=True)
+
+    # 先试 PDF 自带书签
+    existing_toc = doc.get_toc()
+    if existing_toc:
+        result = parse_existing_toc(existing_toc, total_pages, rules)
+        if result['units']:
+            result['subject'] = subject_key
+            result['subjectName'] = rules['name']
+            doc.close()
+            print(f"[OCR] ✅ 使用 PDF 自带书签: {len(result['units'])} 个单元", flush=True)
+            return result
+
+    # ★ 核心：渲染目录页为图片并 OCR
+    # 目录从第4页开始，最多4页（第4~7页）
+    toc_start = 4
+    toc_end = min(7, total_pages)
+
+    # 先用文字检测确定目录页范围（如果文字可提取）
+    toc_pages = _find_toc_pages(page_lines, rules, total_pages) if font_count else set()
+
+    # 如果文字检测到目录页，用它们；否则默认扫描4~7页
+    if toc_pages:
+        ocr_pages = sorted(toc_pages)
+    else:
+        ocr_pages = list(range(toc_start, toc_end + 1))
+
+    print(f"[OCR] 需要OCR的目录页: {ocr_pages}", flush=True)
+
+    # 渲染目录页为图片并 OCR
+    import pytesseract
+    from PIL import Image
+    import io as _io
+
+    ocr_text_all = ""
+    ocr_lines = []  # [(text, page_num)]
+
+    for page_num in ocr_pages:
+        page = doc[page_num - 1]  # 0-indexed
+        # 高分辨率渲染：DPI=300 确保小字清晰
+        mat = fitz.Matrix(300/72, 300/72)
+        pix = page.get_pixmap(matrix=mat)
+        img_data = pix.tobytes("png")
+        img = Image.open(_io.BytesIO(img_data))
+
+        # OCR 识别：中文简体 + 英文，保留版面布局
+        # --psm 6 = 假设为统一文本块，适合目录页
+        config = '--psm 6 -l chi_sim+eng'
+        text = pytesseract.image_to_string(img, config=config)
+
+        print(f"[OCR] 第{page_num}页 OCR 完成: {len(text)} 字符", flush=True)
+
+        # 逐行收集
+        for line in text.split('\n'):
+            line = line.strip()
+            if line:
+                ocr_lines.append((line, page_num))
+                ocr_text_all += line + '\n'
+
+    doc.close()
+
+    if not ocr_lines:
+        print("[OCR] ❌ OCR 未识别到任何文字", flush=True)
+        return {'units': [], 'pageOffset': 0, 'totalPages': total_pages,
+                'method': 'ocr_empty', 'subject': subject_key,
+                'subjectName': rules['name']}
+
+    # ★ 解析 OCR 文本为结构化目录
+    units = _parse_ocr_toc_lines(ocr_lines, rules, total_pages)
+
+    if not units:
+        print(f"[OCR] ❌ OCR 目录解析失败，OCR文本前500字: {ocr_text_all[:500]}", flush=True)
+        return {'units': [], 'pageOffset': 0, 'totalPages': total_pages,
+                'method': 'ocr_parse_fail', 'subject': subject_key,
+                'subjectName': rules['name']}
+
+    # ★ 用正文标题搜索定位真实 PDF 页码
+    toc_page_set = set(ocr_pages)
+    units = _relocate_units_by_body_search(
+        units, page_lines, toc_page_set, total_pages, rules
+    )
+
+    print(f"[OCR] ✅ OCR 目录提取成功: {len(units)} 个单元, "
+          f"{sum(len(u['lessons']) for u in units)} 个书签", flush=True)
+
+    return {
+        'units': units,
+        'pageOffset': 0,
+        'totalPages': total_pages,
+        'method': 'ocr_screenshot',
+        'subject': subject_key,
+        'subjectName': rules['name'],
+        'detectedOffset': 0,
+    }
+
+
+def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
+    """解析 OCR 识别出的目录文本行为三级目录结构。
+
+    OCR 输出的每行是目录页上的一行文字，如：
+      "第一单元 春秋战国时期"          → 单元
+      "第1课 隋唐的统一 ........ 2"    → 课文（带页码）
+      "1 春 朱自清 .... 5"             → 课文（带页码）
+      "写作 ........ 17"               → 栏目
+
+    与 _parse_toc_page 类似，但无 y 坐标信息，
+    所以只能靠行末页码模式提取。
+    """
+    units = []
+    cur_unit = None
+    cur_l2 = None
+
+    # 预处理：合并跨行条目（OCR 可能把标题和页码拆成两行）
+    merged_lines = []
+    i = 0
+    while i < len(ocr_lines):
+        text, page = ocr_lines[i]
+        text = text.strip()
+        if not text:
+            i += 1
+            continue
+        # 如果当前行不以页码结尾，且下一行是纯数字，则合并
+        ends_with_page = bool(re.search(r'(\d{1,3})\s*$', text))
+        if not ends_with_page and i + 1 < len(ocr_lines):
+            next_text = ocr_lines[i + 1][0].strip()
+            if re.match(r'^\d{1,3}$', next_text):
+                merged = text + ' ... ' + next_text
+                merged_lines.append((merged, page))
+                i += 2
+                continue
+        merged_lines.append((text, page))
+        i += 1
+
+    print(f"[OCR] 合并后目录行数: {len(merged_lines)}", flush=True)
+
+    for idx, (text, page) in enumerate(merged_lines):
+        text = text.strip()
+        if not text:
+            continue
+
+        # 跳过纯页码行
+        if PAGE_NUM_RE.match(text):
+            continue
+
+        # 跳过英语 "Page Sx" 行
+        if PAGE_REF_RE.match(text):
+            continue
+
+        # 提取标题和页码
+        m = re.search(r'(\d{1,3})\s*$', text)
+        if m:
+            book_page = int(m.group(1))
+            title = text[:m.start()].strip()
+        else:
+            book_page = None
+            title = text
+
+        # 清理标题末尾的省略号、连线符
+        title = re.sub(r'[\.·…\-—_\s]+$', '', title).strip()
+        # 清理标题开头的省略号（OCR 有时会在行首加点）
+        title = re.sub(r'^[\.·…\-—_\s]+', '', title).strip()
+
+        if not title or len(title) > 120:
+            continue
+
+        if idx < 30:
+            print(f"[OCR]   行[{idx}]: '{text}' -> title='{title}', page={book_page}", flush=True)
+
+        # 判断单元标题
+        if _is_unit_title(title, rules):
+            page_num = max(1, min(book_page, total_pages)) if book_page else 1
+
+            # 检查下一行是否为单元副标题
+            if idx + 1 < len(merged_lines):
+                next_text = merged_lines[idx + 1][0].strip()
+                next_m = re.search(r'(\d{1,3})\s*$', next_text)
+                next_title = re.sub(r'[\.·…\-—_\s]+$', '', next_text[:next_m.start()] if next_m else next_text).strip()
+                next_has_page = next_m is not None
+                if (not next_has_page
+                        and not _is_unit_title(next_title, rules)
+                        and not rules['lesson_re'].match(next_title)
+                        and not any(kw in next_title for kw in rules['group_kws'])
+                        and 2 <= len(next_title) <= 40
+                        and next_title not in ['目录', '目錄', 'Contents', 'CONTENTS']):
+                    title = f"{title} {next_title}"
+                    print(f"[OCR]     → 单元副标题合并: '{next_title}'", flush=True)
+
+            cur_unit = {'title': title, 'page': page_num, 'lessons': []}
+            units.append(cur_unit)
+            cur_l2 = None
+            continue
+
+        # 判断栏目还是课文
+        is_group = any(kw in title for kw in rules['group_kws'])
+        is_lesson = rules['lesson_re'].match(title) is not None
+
+        # 无页码的非课文非栏目短行 → 跳过
+        if book_page is None and not is_lesson and not is_group and 2 <= len(title) <= 40:
+            continue
+
+        # 无页码的栏目 → 跳过
+        if book_page is None and is_group:
+            continue
+
+        # 页码处理
+        if book_page is not None:
+            real_page = max(1, min(book_page, total_pages))
+        else:
+            # 估算
+            last_page = 1
+            if cur_unit and cur_unit['lessons']:
+                for sib in reversed(cur_unit['lessons']):
+                    if sib.get('startPage'):
+                        last_page = sib['startPage'] + 1
+                        break
+                    elif sib.get('page'):
+                        last_page = sib['page'] + 1
+                        break
+            real_page = min(last_page, total_pages)
+
+        if cur_unit is None:
+            cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
+            units.append(cur_unit)
+
+        if is_group:
+            cur_l2 = None
+            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': real_page})
+        elif is_lesson:
+            cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
+            cur_unit['lessons'].append(cur_l2)
+        else:
+            # 无编号短标题 → 子篇目或独立 lesson
+            if cur_l2 is not None:
+                cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': real_page})
+            else:
+                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
+                cur_unit['lessons'].append(cur_l2)
+
+    # 英语占位
+    if rules['name'] == '英语':
+        for u in units:
+            if not any(l['type'] == 'lesson' for l in u['lessons']):
+                u['lessons'].append({
+                    'title': u['title'], 'type': 'lesson',
+                    'startPage': u['page'], 'children': []
+                })
+
+    # 过滤无课文的单元
+    units = [u for u in units if any(l['type'] == 'lesson' for l in u['lessons'])]
+    if units:
+        _compute_endpages_v2(units, total_pages)
+    return units if units else None
+
+
 def extract_toc_with_fitz(pdf_bytes):
     """用 pymupdf 提取三级目录（参考用户 Python 书签程序的层级规则）。
 
@@ -1030,6 +1362,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         print(f"[API] 已读取 PDF 数据，开始提取...", flush=True)
 
         try:
+            # ★ 优先使用截图+OCR 方案（最可靠，绕过 CID 字体问题）
+            print(f"[API] ★ 尝试 OCR 截图方案...", flush=True)
+            result = extract_toc_with_ocr(body)
+            if result.get('units'):
+                print(f"[API] ✅ OCR 提取成功: {len(result['units'])} 个单元, 方法={result.get('method')}", flush=True)
+                self.send_json(result)
+                return
+
+            # OCR 失败 → 回退到 PyMuPDF 文字提取
+            print(f"[API] OCR 未成功 (method={result.get('method')}), 回退到 fitz 文字提取...", flush=True)
             result = extract_toc_with_fitz(body)
             print(f"[API] 提取完成: {len(result.get('units', []))} 个单元, 方法={result.get('method')}", flush=True)
             self.send_json(result)
