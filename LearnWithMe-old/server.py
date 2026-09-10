@@ -72,7 +72,9 @@ def _find_starter_page(page_lines, starter_num, total_pages):
 SUBJECT_RULES = {
     'chinese': {
         # 第X单元 → 1 春 / 3* 雨的四季 / 写作… / 综合性学习…
-        'unit_re': re.compile(r'第[一二三四五六七八九十百零〇两0-9]+单元'),
+        # OCR 容错：单元可能被误读为"里元"/"丫元"/"二单元"等，
+        # 所以只要求"第"+数字+任意一字符+"元"的模式
+        'unit_re': re.compile(r'第\s*[一二三四五六七八九十百零〇两0-9]+\s*\S?元'),
         'lesson_re': re.compile(r'^\d+\*?\s*[.．、]?\s*\S'),
         'group_kws': ['写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
                       '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识',
@@ -895,25 +897,48 @@ def extract_toc_with_ocr(pdf_bytes):
     print(f"[OCR] 需要OCR的目录页: {ocr_pages}", flush=True)
 
     # 渲染目录页为图片并 OCR
-    import pytesseract
-    from PIL import Image
-    import io as _io
+    try:
+        import pytesseract
+        from PIL import Image
+        import io as _io
+    except ImportError as ie:
+        missing = str(ie)
+        print(f"[OCR] ❌ OCR 依赖缺失: {missing}", flush=True)
+        print(f"[OCR] 请安装: pip install pytesseract Pillow && apt-get install tesseract-ocr tesseract-ocr-chi-sim", flush=True)
+        doc.close()
+        return {'units': [], 'pageOffset': 0, 'totalPages': total_pages,
+                'method': 'ocr_dep_missing', 'error': f'OCR 依赖缺失: {missing}',
+                'subject': subject_key, 'subjectName': rules['name']}
+
+    # 验证 tesseract 二进制可用
+    import shutil as _shutil
+    if not _shutil.which('tesseract'):
+        print("[OCR] ❌ tesseract 二进制未安装", flush=True)
+        doc.close()
+        return {'units': [], 'pageOffset': 0, 'totalPages': total_pages,
+                'method': 'ocr_no_binary', 'error': 'tesseract 未安装',
+                'subject': subject_key, 'subjectName': rules['name']}
 
     ocr_text_all = ""
     ocr_lines = []  # [(text, page_num)]
 
     for page_num in ocr_pages:
         page = doc[page_num - 1]  # 0-indexed
-        # 高分辨率渲染：DPI=300 确保小字清晰
-        mat = fitz.Matrix(300/72, 300/72)
+        # 高分辨率渲染：DPI=400 确保小字清晰（400 比 300 中文识别率更高）
+        mat = fitz.Matrix(400/72, 400/72)
         pix = page.get_pixmap(matrix=mat)
         img_data = pix.tobytes("png")
         img = Image.open(_io.BytesIO(img_data))
 
-        # OCR 识别：中文简体 + 英文，保留版面布局
+        # OCR 识别：仅用 chi_sim（chi_sim+eng 混合时 Tesseract 会把
+        # 中文字符误认为英文字母，如"春"→"@"，"朱自清"→"KBB"）
         # --psm 6 = 假设为统一文本块，适合目录页
-        config = '--psm 6 -l chi_sim+eng'
-        text = pytesseract.image_to_string(img, config=config)
+        config = '--psm 6 -l chi_sim'
+        try:
+            text = pytesseract.image_to_string(img, config=config)
+        except Exception as ocr_err:
+            print(f"[OCR] ⚠️ 第{page_num}页 OCR 失败: {ocr_err}，跳过此页", flush=True)
+            continue
 
         print(f"[OCR] 第{page_num}页 OCR 完成: {len(text)} 字符", flush=True)
 
@@ -950,7 +975,8 @@ def extract_toc_with_ocr(pdf_bytes):
         print(f"[OCR] ❌ OCR 目录解析失败，OCR文本前500字: {ocr_text_all[:500]}", flush=True)
         return {'units': [], 'pageOffset': 0, 'totalPages': total_pages,
                 'method': 'ocr_parse_fail', 'subject': subject_key,
-                'subjectName': rules['name']}
+                'subjectName': rules['name'],
+                'ocrDebug': ocr_text_all[:2000]}
 
     # ★ 用正文标题搜索定位真实 PDF 页码
     toc_page_set = set(ocr_pages)
@@ -969,6 +995,7 @@ def extract_toc_with_ocr(pdf_bytes):
         'subject': subject_key,
         'subjectName': rules['name'],
         'detectedOffset': 0,
+        'ocrDebug': ocr_text_all[:2000],
     }
 
 
@@ -1052,6 +1079,14 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
         # 跳过英语 "Page Sx" 行
         if PAGE_REF_RE.match(text):
             continue
+
+        # ★ 修复 OCR 页码空格：OCR 可能将 "17" 读成 "1 7"，"28" 读成 "2 8"
+        # 合并行末数字间的空格（仅末尾连续数字，不影响标题中间的数字）
+        while True:
+            new_text = re.sub(r'(\d)\s+(\d)(?=\s*$)', r'\1\2', text)
+            if new_text == text:
+                break
+            text = new_text
 
         # 提取标题和页码
         m = re.search(r'(\d{1,3})\s*$', text)
