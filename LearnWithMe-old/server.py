@@ -76,9 +76,10 @@ SUBJECT_RULES = {
         # 所以只要求"第"+数字+任意一字符+"元"的模式
         'unit_re': re.compile(r'第\s*[一二三四五六七八九十百零〇两0-9]+\s*\S?元'),
         'lesson_re': re.compile(r'^\d+\*?\s*[.．、]?\s*\S'),
-        'group_kws': ['写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
+        'group_kws': ['阅读', '写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
                       '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识',
-                      '阅读综合实践'],
+                      '阅读综合实践', '课文', '古诗词', '思考探究', '积累拓展', '读读写写',
+                      '写作实践', '研讨与练习'],
         'name': '语文',
     },
     'math': {
@@ -193,62 +194,66 @@ SUBJECT_RULES = {
 # 学科识别关键词（按页扫描，统计每套规则命中数，取最高）
 SUBJECT_DETECT_KEYWORDS = {
     'chinese': ['语文', '课文', '生字', '识字', '写字', '综合性学习', '名著导读',
-                '课外古诗词', '口语交际', '写作', '阅读综合实践'],
-    'math': ['数学', '例题', '练习', '习题', '定理', '公理', '几何', '代数', '函数', '方程',
-             '有理数', '整式', '一元一次', '阅读与思考', '实验与探究', '数学活动',
-             '小结', '复习题', '正数和负数', '数轴', '绝对值'],
+                '课外古诗词', '口语交际', '写作', '阅读综合实践',
+                # 语文特有课文标题/作者名（高置信度信号）
+                '朱自清', '老舍', '鲁迅', '史铁生', '莫怀戚', '刘湛秋',
+                '泰戈尔', '冰心', '李白', '曹操', '王湾', '马致远',
+                '春', '济南的冬天', '雨的四季', '秋天的怀念', '散步',
+                '金色花', '荷叶', '世说新语', '咏雪', '陈太丘',
+                '从百草园到三味书屋', '观沧海', '次北固山下'],
+    'math': ['数学', '例题', '习题', '定理', '公理', '几何', '代数', '函数', '方程',
+             '有理数', '整式', '一元一次', '数学活动',
+             '小结', '复习题', '正数和负数', '数轴', '绝对值',
+             '勾股定理', '平行四边形', '三角形', '圆周率'],
     'english': ['English', 'Listening', 'Speaking', 'Reading', 'Section', 'Grammar',
                 'Pronunciation', 'Vocabulary', 'Unit', 'Project', 'Words', 'Name List',
-                'Self Check', 'Grammar Focus'],
+                'Self Check', 'Grammar Focus', 'Starter'],
     'history': ['历史', '朝代', '皇帝', '秦朝', '汉代', '汉朝', '唐代', '唐朝',
                 '宋代', '宋朝', '元代', '元朝', '明代', '明朝', '清代', '清朝',
                 '第1课', '第2课', '第3课', '活动课', '单元综合', '学史方法', '大事年表',
                 '北京人', '半坡', '河姆渡', '夏商周', '春秋', '战国', '秦汉',
                 '三国', '南北朝', '隋唐', '甲骨文', '青铜器', '分封制', '丝绸之路'],
-    'morality': ['道德', '法治', '宪法', '公民', '权利', '义务', '国家', '法律', '品德',
-                 '中学时代', '学习新天地', '友谊', '师生', '亲情', '生命',
+    'morality': ['道德', '法治', '宪法', '公民', '权利', '义务', '法律', '品德',
+                 '中学时代', '学习新天地', '友谊', '师生', '亲情',
                  '单元思考与行动', '相关链接', '阅读感悟', '探究与分享', '拓展空间'],
     'geography': ['地理', '地图', '经度', '纬度', '经纬', '地球', '大洲', '大洋',
                   '气候', '地形', '河流', '聚落', '区域', '亚洲', '欧洲', '非洲',
                   '美洲', '南极洲', '北冰洋', '太平洋', '大西洋', '印度洋',
                   '经线', '纬线', '赤道', '本初子午线', '时区', '海拔', '等高线',
-                  '人口', '人种', '语言', '宗教', '国家', '城市化', '可持续发展',
-                  '第一/二/三产业', '畜牧业', '林业', '渔业', '工业', '旅游业',
-                  '地形图', '比例尺', '图例', '指向标', '海拔', '相对高度'],
-    'biology': ['生物', '细胞', '组织', '器官', '系统', '细胞膜', '细胞核', '细胞质',
+                  '人种', '宗教', '城市化', '可持续发展',
+                  '畜牧业', '林业', '渔业', '旅游业',
+                  '地形图', '比例尺', '图例', '指向标', '相对高度'],
+    'biology': ['生物', '细胞', '组织', '器官', '细胞膜', '细胞核', '细胞质',
                 '细胞壁', '液泡', '叶绿体', '线粒体', '光合作用', '呼吸作用',
-                '蒸腾作用', '种子', '根', '茎', '叶', '花', '果实', '导管', '筛管',
-                '动物', '植物', '微生物', '病毒', '细菌', '真菌', '生态系统',
+                '蒸腾作用', '微生物', '病毒', '细菌', '真菌', '生态系统',
                 '生产者', '消费者', '分解者', '食物链', '食物网', '生物圈',
                 '遗传', '变异', '进化', '基因', '染色体', 'DNA', '性状',
-                '哺乳动物', '鸟类', '爬行动物', '两栖动物', '鱼类', '昆虫',
-                '关节', '骨骼肌', '先天性行为', '学习行为', '社会行为'],
+                '哺乳动物', '爬行动物', '两栖动物',
+                '骨骼肌', '先天性行为', '学习行为', '社会行为'],
     'physics': ['物理', '力学', '电学', '光学', '热学', '声学', '电磁学',
-                '速度', '加速度', '力', '质量', '重力', '摩擦力', '压力', '压强',
-                '浮力', '杠杆', '滑轮', '功', '功率', '能', '动能', '势能',
+                '加速度', '重力', '摩擦力', '压强', '浮力', '杠杆', '滑轮',
+                '功率', '动能', '势能',
                 '电流', '电压', '电阻', '欧姆定律', '电功率', '电功',
                 '电荷', '正电荷', '负电荷', '电路', '串联', '并联',
                 '磁体', '磁极', '磁场', '磁感线', '电磁感应', '发电机', '电动机',
-                '声音', '振动', '回声', '超声波', '次声波',
-                '反射', '折射', '透镜', '凸透镜', '凹透镜', '焦距',
-                '温度', '熔化', '凝固', '汽化', '液化', '升华', '凝华',
-                '内能', '比热容', '热值', '热机', '能量守恒'],
-    'chemistry': ['化学', '物质', '元素', '分子', '原子', '离子', '质子', '中子', '电子',
-                  '化合价', '化学式', '化学方程式', '反应', '化合反应', '分解反应',
-                  '置换反应', '复分解反应', '氧化反应', '还原反应',
+                '超声波', '次声波',
+                '凸透镜', '凹透镜', '焦距',
+                '熔化', '凝固', '汽化', '液化', '升华', '凝华',
+                '内能', '比热容', '热机', '能量守恒'],
+    'chemistry': ['化学', '化合价', '化学式', '化学方程式',
+                  '化合反应', '分解反应', '置换反应', '复分解反应', '氧化反应', '还原反应',
                   '溶液', '溶质', '溶剂', '饱和溶液', '溶解度', '质量分数',
-                  '酸', '碱', '盐', '氧化物', '指示剂', '石蕊', '酚酞', 'pH',
-                  '中和反应', '金属', '合金', '生铁', '钢',
+                  '氧化物', '指示剂', '石蕊', '酚酞',
+                  '中和反应', '合金', '生铁',
                   '氧气', '二氧化碳', '氢气', '氮气', '稀有气体',
-                  '燃烧', '灭火', '化石燃料', '可再生能源',
-                  '化学肥料', '塑料', '合成纤维', '合成橡胶',
-                  '铁', '铜', '铝', '锌', '银', '金', '盐酸', '硫酸', '氢氧化钠',
-                  '氢氧化钙', '氯化钠', '碳酸钠', '碳酸钙'],
-    'pe': ['体育', '运动', '锻炼', '健康', '体能', '力量', '速度', '耐力', '柔韧',
-           '灵敏', '田径', '篮球', '足球', '排球', '乒乓球', '羽毛球', '网球',
-           '游泳', '体操', '武术', '健美操', '跳绳', '踢毽', '跑步', '跳远', '跳高',
-           '投掷', '铅球', '标枪', '接力', '跨栏', '马拉松',
-           '营养', '膳食', '睡眠', '心理健康', '社会适应', '运动损伤', '急救',
+                  '化石燃料', '可再生能源',
+                  '化学肥料', '合成纤维', '合成橡胶',
+                  '盐酸', '硫酸', '氢氧化钠', '氢氧化钙', '氯化钠', '碳酸钠', '碳酸钙'],
+    'pe': ['体育', '锻炼', '体能', '柔韧', '灵敏', '田径', '篮球', '足球', '排球',
+           '乒乓球', '羽毛球', '网球', '游泳', '体操', '武术', '健美操',
+           '跳绳', '踢毽', '跑步', '跳远', '跳高', '投掷', '铅球', '标枪',
+           '接力', '跨栏', '马拉松',
+           '膳食', '睡眠', '心理健康', '社会适应', '运动损伤', '急救',
            '奥林匹克', '体育精神', '公平竞争', '团队合作', '终身体育',
            '足球场', '篮球场', '田径场', '游泳馆'],
 }
@@ -594,16 +599,16 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             continue
 
         # 判断是栏目还是课文
-        is_group = any(kw in title for kw in rules['group_kws'])
+        # ★ is_lesson 优先：编号开头的标题一定是课文，即使含栏目关键词（如"1 阅读"）
         is_lesson = rules['lesson_re'].match(title) is not None
+        is_group = (not is_lesson) and any(kw in title for kw in rules['group_kws'])
 
         # 无页码的非课文非栏目短行 → 单元副标题（已合并到单元标题）或装饰文字，跳过
         if book_page is None and not is_lesson and not is_group and 2 <= len(title) <= 40:
             continue
 
-        # 无页码的栏目直接跳过（栏目不是必须的书签）
-        if book_page is None and is_group:
-            continue
+        # ★ 栏目（阅读/写作）无论有无页码都保留，作为结构分类标签（page=None）
+        # 不再跳过无页码的栏目 — 用户需要看到"阅读"等栏目标签
 
         # 无页码的课文/子篇目：估算页码（用上一篇的页码+1，确保不遗漏书签）
         if book_page is not None:
@@ -622,12 +627,18 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             real_page = min(last_page, total_pages)
 
         if cur_unit is None:
+            # ★ 栏目(阅读/写作)在单元标题前出现时，不要创建"未命名单元"
+            # 直接跳过这个栏目（它属于尚未出现的单元，后面单元出现时会重新出现）
+            if is_group:
+                continue
+            # 课文在单元标题前出现（罕见），创建占位单元
             cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
             units.append(cur_unit)
 
         if is_group:
             cur_l2 = None
-            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': real_page})
+            # ★ 栏目不需要页码（用户需求：栏目只是分类标签）
+            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': None})
         else:
             # 课文标题可能带编号 "1 春 / 朱自清"，也可能是子篇目 "观沧海 / 曹操"
             if is_lesson:
@@ -677,26 +688,39 @@ def _relocate_units_by_body_search(units, page_lines, toc_pages, total_pages, ru
     search_start = toc_end + 1
 
     prev_page = max(1, search_start)
+    body_search_hits = 0
+    body_search_misses = 0
     for u in units:
         # 单元标题页：用单元第一个 lesson 的页码或单元标题搜索
         unit_first_page = None
         for l in u['lessons']:
             if l.get('type') == 'lesson':
-                # lesson 自身
+                # lesson 自身 — 保留 _parse_toc_page 计算的 offset 页码作为 fallback
+                offset_page = l.get('startPage', prev_page)
                 real_page = _find_lesson_pdf_page_by_title(
                     page_lines, l['title'], toc_pages, search_start,
                     total_pages, rules, prev_page
                 )
+                # ★ 如果 body search 找到的页和 offset 页差太远（>5页），
+                # 可能是误匹配，用 offset 页码作为 fallback
+                if abs(real_page - offset_page) > 5 and offset_page > 0:
+                    body_search_misses += 1
+                    real_page = max(1, min(offset_page, total_pages))
+                else:
+                    body_search_hits += 1
                 l['startPage'] = real_page
                 prev_page = real_page
                 if unit_first_page is None:
                     unit_first_page = real_page
                 # sublessons
                 for sub in l.get('children', []):
+                    offset_page = sub.get('startPage', prev_page)
                     sub_page = _find_lesson_pdf_page_by_title(
                         page_lines, sub['title'], toc_pages, search_start,
                         total_pages, rules, prev_page
                     )
+                    if abs(sub_page - offset_page) > 5 and offset_page > 0:
+                        sub_page = max(1, min(offset_page, total_pages))
                     sub['startPage'] = sub_page
                     prev_page = sub_page
             elif l.get('type') == 'group':
@@ -709,15 +733,15 @@ def _relocate_units_by_body_search(units, page_lines, toc_pages, total_pages, ru
     # 重新计算 endPage
     _compute_endpages_v2(units, total_pages)
     print(f"[API] ✅ 正文标题匹配定位完成: {sum(len(u['lessons']) for u in units)} 个书签, "
-          f"首个单元页={units[0]['page']}")
+          f"首个单元页={units[0]['page']}, body搜索命中={body_search_hits}, 未命中={body_search_misses}")
     return units
 
 
 def _find_toc_pages(page_lines, rules, total_pages):
     """定位目录页（只看目录页，绝不扫描正文）。
 
-    教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录。
-    目录可能有 1~3 页，从第4页开始逐页检测，遇到非目录页即停止。
+    教材结构：第1页封面、第2页扉页、第3页起是目录（可能有1~4页目录）。
+    从第3页开始逐页检测，遇到非目录页即停止。
 
     目录页判定核心特征：
     - 含"目录"标题字样（首页通常有）
@@ -725,9 +749,9 @@ def _find_toc_pages(page_lines, rules, total_pages):
     - 含多个单元/课文标题
     """
     toc_pages = set()
-    # 目录从第4页开始，最多4页，检查第4~7页
-    # 用户描述：目录页可能 1~4 页，需动态判断结束位置
-    start_page = 4
+    # 目录从第3页开始，最多4页，检查第3~7页
+    # 用户描述：封面=1, 扉页=2, 目录=3+, 正文在目录之后
+    start_page = 3
     end_page = min(7, total_pages)
 
     for p in range(start_page, end_page + 1):
@@ -1133,16 +1157,15 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
             continue
 
         # 判断栏目还是课文
-        is_group = any(kw in title for kw in rules['group_kws'])
+        # ★ is_lesson 优先：编号开头的标题一定是课文
         is_lesson = rules['lesson_re'].match(title) is not None
+        is_group = (not is_lesson) and any(kw in title for kw in rules['group_kws'])
 
         # 无页码的非课文非栏目短行 → 跳过
         if book_page is None and not is_lesson and not is_group and 2 <= len(title) <= 40:
             continue
 
-        # 无页码的栏目 → 跳过
-        if book_page is None and is_group:
-            continue
+        # ★ 栏目（阅读/写作）保留作为结构标签，不跳过
 
         # 页码处理
         if book_page is not None:
@@ -1161,12 +1184,18 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
             real_page = min(last_page, total_pages)
 
         if cur_unit is None:
+            # ★ 栏目(阅读/写作)在单元标题前出现时，不要创建"未命名单元"
+            # 直接跳过这个栏目（它属于尚未出现的单元，后面单元出现时会重新出现）
+            if is_group:
+                continue
+            # 课文在单元标题前出现（罕见），创建占位单元
             cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
             units.append(cur_unit)
 
         if is_group:
             cur_l2 = None
-            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': real_page})
+            # ★ 栏目不需要页码（用户需求：栏目只是分类标签）
+            cur_unit['lessons'].append({'title': title, 'type': 'group', 'page': None})
         elif is_lesson:
             cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
             cur_unit['lessons'].append(cur_l2)
@@ -1526,19 +1555,23 @@ def extract_toc_with_fitz(pdf_bytes):
                     'subjectName': rules['name']}
 
     # ★ 步骤 1：定位目录页（关键：只看目录页，绝不扫描正文！）
-    # 教材结构固定：第1页封面、第2页扉页、第3页版权页、第4页起是目录
-    # 目录可能有 1~4 页，需动态识别目录结束位置
+    # 教材结构：第1页封面、第2页扉页、第3页起是目录（可能1~4页）
+    # 目录页之后即为正文页
     toc_pages = _find_toc_pages(page_lines, rules, total_pages)
 
-    # ★ 步骤 2：解析目录页提取条目（标题 + 印刷页码）
-    # 此处不再依赖 offset 计算真实页码，offset 仅作为兜底估算
-    page_offset = 0  # 默认偏移量设为 0，由正文标题匹配决定真实页
+    # ★ 步骤 2：计算物理页码偏移量
+    # 物理页编号：封面=1, 扉页=2, 目录=3, 4..., 正文=目录后
+    # 印刷页码通常从正文第1页开始计为1，所以:
+    # offset = 封面(1) + 扉页(1) + 目录页数 = 2 + len(toc_pages)
+    # 物理页 = 印刷页 + offset
+    page_offset = 2 + len(toc_pages) if toc_pages else 0
+    print(f"[API] 页码偏移: offset={page_offset} (封面1+扉页1+目录{len(toc_pages) if toc_pages else 0}页)", flush=True)
 
     if toc_pages:
         toc_units = _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, page_offset, total_pages)
         if toc_units:
             # ★ 步骤 3：根据书签标题在正文中匹配，定位真实 PDF 物理页码
-            # 这是新思路核心：不通过 offset 间接换算，直接在正文搜索标题
+            # 正文搜索优先，offset 页码作为 fallback
             toc_units = _relocate_units_by_body_search(
                 toc_units, page_lines, toc_pages, total_pages, rules
             )
@@ -1551,7 +1584,7 @@ def extract_toc_with_fitz(pdf_bytes):
                 'method': 'toc_body_match',
                 'subject': subject_key,
                 'subjectName': rules['name'],
-                'detectedOffset': 0,
+                'detectedOffset': page_offset,
             }
         print(f"[API] ⚠️ 目录页解析失败，目录页={sorted(toc_pages)}，返回空结果")
 
@@ -1563,7 +1596,7 @@ def extract_toc_with_fitz(pdf_bytes):
         'method': 'toc_failed',
         'subject': subject_key,
         'subjectName': rules['name'],
-        'detectedOffset': 0,
+        'detectedOffset': page_offset,
     }
 
 

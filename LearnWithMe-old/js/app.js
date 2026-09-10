@@ -3048,17 +3048,27 @@ function relocateUnitsByBodySearch(units, pageLines, tocPages, totalPages) {
     let unitFirstPage = null;
     for (const l of u.lessons) {
       if (l.type === 'lesson') {
-        const realPage = findLessonPdfPageByTitle(
+        // 保留 offset 计算的页码作为 fallback
+        const offsetPage = l.startPage || prevPage;
+        let realPage = findLessonPdfPageByTitle(
           pageLines, l.title, tocSet, searchStart, totalPages, prevPage
         );
+        // ★ body search 误匹配保护：差距太大用 offset 页码
+        if (Math.abs(realPage - offsetPage) > 5 && offsetPage > 0) {
+          realPage = Math.max(1, Math.min(offsetPage, totalPages));
+        }
         l.startPage = realPage;
         prevPage = realPage;
         if (unitFirstPage === null) unitFirstPage = realPage;
         // sublessons
         for (const sub of (l.children || [])) {
-          const subPage = findLessonPdfPageByTitle(
+          const subOffsetPage = sub.startPage || prevPage;
+          let subPage = findLessonPdfPageByTitle(
             pageLines, sub.title, tocSet, searchStart, totalPages, prevPage
           );
+          if (Math.abs(subPage - subOffsetPage) > 5 && subOffsetPage > 0) {
+            subPage = Math.max(1, Math.min(subOffsetPage, totalPages));
+          }
           sub.startPage = subPage;
           prevPage = subPage;
         }
@@ -3110,8 +3120,10 @@ async function extractTocFromTocPages(pdf, totalPages) {
   );
   // 课文：语文 "1 春" / 历史道法 "第1课 标题" / 数学 "1.1 标题" / 英语 "Section A"
   const lessonRe = /^(?:\d+\*?\s*[.．、]?\s*\S|第\s*[一二三四五六七八九十百零〇两0-9]+\s*课\s*\S|\d+(?:\.\d+){1,2}\s*\S?|Section\s*[AB])/i;
-  const groupKws = ['写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
+  const groupKws = ['阅读', '写作', '综合性学习', '名著导读', '课外古诗词诵读', '课外古诗词',
                     '口语交际', '活动·探究', '活动探究', '任务', '汉语知识', '语法知识',
+                    '课文', '古诗词', '思考探究', '积累拓展', '读读写写', '写作实践', '研讨与练习',
+                    '阅读综合实践',
                     '活动课', '单元综合', '学史方法', '课后活动', '知识梳理', '单元总结',
                     '附录', '大事年表', '科学·技术·社会', '科学家的故事', '阅读与思考',
                     '实验与探究', '观察与猜想', '信息技术应用', '数学活动', '小结', '复习题',
@@ -3251,11 +3263,11 @@ async function extractTocFromTocPages(pdf, totalPages) {
   }
   console.log('[目录页提取] 目录页:', tocPages);
 
-  // ★ 新思路：不再计算页码偏移量 offset（这是页码从 96 起跳错误的根因）
-  // 目录条目的标题将作为关键字，在正文中搜索定位真实 PDF 页码
-  // offset = 0 表示 bookPage 暂时按印刷页码 + 0 估算，最终由 relocateUnitsByBodySearch 重新定位
-  const offset = 0;
-  console.log('[目录页提取] 跳过 offset 计算，将由正文标题匹配定位真实页码');
+  // ★ 物理页码偏移：封面=1, 扉页=2, 目录=3+, 正文=目录后
+  // offset = 2 + 目录页数，物理页 = 印刷页 + offset
+  // 正文标题匹配优先，offset 页码作为 fallback
+  const offset = 2 + tocPages.length;
+  console.log(`[目录页提取] offset=${offset} (封面1+扉页1+目录${tocPages.length}页)`);
 
   // 构建页码索引（按 y 降序 = 从上到下，与 pageLines 一致）
   const pageNumIndex = {};
@@ -3418,14 +3430,14 @@ async function extractTocFromTocPages(pdf, totalPages) {
       continue;
     }
 
-    const isGroup = groupKws.some(kw => title.includes(kw));
     const isLesson = lessonRe.test(title);
+    // ★ is_lesson 优先：编号开头的标题一定是课文，即使含栏目关键词
+    const isGroup = !isLesson && groupKws.some(kw => title.includes(kw));
 
     // 无页码的非课文非栏目短行 → 单元副标题/装饰文字，跳过
     if ((bookPage === null || bookPage === undefined) && !isLesson && !isGroup
         && title.length >= 2 && title.length <= 40) continue;
-    // 无页码的栏目跳过
-    if ((bookPage === null || bookPage === undefined) && isGroup) continue;
+    // ★ 栏目（阅读/写作）保留作为结构标签，不跳过
 
     // 估算页码（无页码时用上一篇+1）
     let realPage;
@@ -3444,13 +3456,16 @@ async function extractTocFromTocPages(pdf, totalPages) {
     }
 
     if (!curUnit) {
+      // ★ 栏目(阅读/写作)在单元标题前出现时，不要创建"未命名单元"
+      if (isGroup) continue;
       curUnit = { title: '未命名单元', page: realPage, lessons: [] };
       units.push(curUnit);
     }
 
     if (isGroup) {
       curL2 = null;
-      curUnit.lessons.push({ title, type: 'group', page: realPage });
+      // ★ 栏目不需要页码（用户需求：栏目只是分类标签）
+      curUnit.lessons.push({ title, type: 'group', page: null });
     } else if (isLesson) {
       curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
       curUnit.lessons.push(curL2);
