@@ -761,8 +761,12 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             if is_lesson:
                 cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
                 target_list.append(cur_l2)
+            elif book_page is not None:
+                # ★ 有独立页码 → 一定是独立课文（如"科学之旅""致同学们"）
+                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
+                target_list.append(cur_l2)
             else:
-                # 无编号的短标题 → 子篇目，挂到最近的 L2 下
+                # 无编号且无页码 → 可能是子篇目或装饰行
                 if cur_l2 is not None:
                     cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': real_page})
                 else:

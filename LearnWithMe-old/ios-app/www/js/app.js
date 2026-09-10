@@ -3594,7 +3594,12 @@ async function extractTocFromTocPages(pdf, totalPages) {
       if (isLesson) {
         curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
         targetList.push(curL2);
+      } else if (bookPage !== null) {
+        // ★ 有独立页码 → 一定是独立课文（如"科学之旅""致同学们"）
+        curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
+        targetList.push(curL2);
       } else {
+        // 无编号且无页码 → 可能是子篇目或装饰行
         if (curL2) {
           curL2.children.push({ title, type: 'sublesson', startPage: realPage });
         } else {
