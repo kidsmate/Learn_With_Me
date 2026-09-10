@@ -792,13 +792,27 @@ def extract_toc_with_fitz(pdf_bytes):
     """
     import fitz
 
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    # ★ 重试逻辑：某些 PDF 首次打开可能因结构异常失败
+    doc = None
+    for attempt in range(2):
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            break
+        except Exception as e:
+            if attempt == 0:
+                print(f"[API] ⚠️ fitz.open 第1次失败: {e}，正在重试...", flush=True)
+                continue
+            print(f"[API] ❌ fitz.open 第2次失败: {e}", flush=True)
+            raise
+
     total_pages = len(doc)
+    print(f"[API] PDF 已打开: {total_pages} 页", flush=True)
 
     # 一次性扫描全文行（含字号/y 坐标），供学科检测和字号提取共用
     page_lines = {}      # page -> [lines]
     text_pages = {}      # text -> set of pages（页眉页脚检测）
     font_count = {}
+    font_info = {}       # font_name -> count（字体信息日志）
     page_num_lines = {}  # page -> [纯页码行]，用于偏移量检测
 
     for page_idx in range(total_pages):
@@ -822,6 +836,9 @@ def extract_toc_with_fitz(pdf_bytes):
                         line_max_font = fs
                     line_y = float(span["bbox"][1])
                     line_x = float(span["bbox"][0])
+                    # 收集字体名称（用于诊断 CID 字体问题）
+                    fname = span.get("font", "unknown")
+                    font_info[fname] = font_info.get(fname, 0) + 1
                 # 归一化：全角数字→半角，全角空格→半角
                 line_text = _normalize_text(line_text).strip()
                 if not line_text or len(line_text) > 120:
@@ -844,6 +861,11 @@ def extract_toc_with_fitz(pdf_bytes):
                 font_count[fs_key] = font_count.get(fs_key, 0) + 1
         page_lines[page_idx + 1] = lines
 
+    # ★ 字体信息日志（诊断 CID 字体提取问题）
+    if font_info:
+        top_fonts = sorted(font_info.items(), key=lambda x: -x[1])[:5]
+        print(f"[API] 字体分布(top5): {top_fonts}", flush=True)
+
     # ★ 学科自适应：根据全文关键词命中数选择提取规则
     subject_key = _detect_subject(page_lines)
     rules = SUBJECT_RULES[subject_key]
@@ -862,6 +884,10 @@ def extract_toc_with_fitz(pdf_bytes):
     doc.close()
 
     if not font_count:
+        # ★ 有字体但无文本：大概率 CID 字体 PDF，PyMuPDF 也无法提取
+        if font_info:
+            cid_fonts = [f for f in font_info if 'CID' in f or 'Identity' in f]
+            print(f"[API] ⚠️ 检测到 CID 字体但无法提取文本: {cid_fonts or list(font_info.keys())[:3]}", flush=True)
         return {'units': [], 'pageOffset': 0, 'totalPages': total_pages, 'method': 'none'}
 
     # ★ 步骤 1：定位目录页（关键：只看目录页，绝不扫描正文！）
