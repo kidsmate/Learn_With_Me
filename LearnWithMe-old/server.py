@@ -441,20 +441,24 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
 
 
 def _reorganize_unit_lessons(units, rules):
-    """后处理：重新分配课文到正确的栏目，确保 L1→L2→L3 结构。
+    """后处理：按学科结构调整课文归属，确保层级正确。
 
-    PDF 文本提取可能导致顺序混乱，使课文被分配到错误的栏目或成为直接课文。
-    例如："写作指导"被误放到"阅读"组下，或"1 春"成为直接课文（无栏目）。
+    不同学科目录结构不同：
+    - 语文/道德与法治/历史：单元(L1)→栏目(L2,如阅读/写作)→课文(L3)
+      栏目是承载课文的容器，所有课文必须归入某栏目
+    - 物理/化学/地理/生物/体育/数学：章/单元(L1)→节/课题(L2,直接作课文)
+      栏目(如科学世界/阅读)是穿插在节之间的独立条目，不是容器
 
-    本函数：
-    1. 收集所有课文（含子篇目，保留 lesson→sublesson 结构）
-    2. 清空所有栏目
-    3. 根据课文标题重新分配到正确栏目：
-       - 标题包含栏目名 → 分配到该栏目（如"写作指导"含"写作" → "写作"栏目）
-       - 未匹配 → 分配到"阅读"栏目（或第一个栏目）
-    4. 按页码排序栏目内课文
-    5. 过滤空栏目，确保"阅读"栏目在前
+    对语文类学科：收集所有课文→清空栏目→按标题重新分配→排序→过滤空栏目
+    对理科类学科：不重组，保留原始顺序（节作为直接课文，栏目独立存在）
     """
+    # ★ 仅对"栏目作为课文容器"的学科进行重组
+    # 语文类：语文、道德与法治、历史（目录结构: 单元→阅读/写作→课文）
+    # 理科类：物理、化学、地理、生物、体育、数学（节本身就是课文）
+    container_subjects = {'语文', '道德与法治', '历史'}
+    if rules['name'] not in container_subjects:
+        return  # ★ 理科类不重组，保留原始解析顺序
+
     for unit in units:
         # 收集所有课文（直接课文 + 各栏目下的课文）
         all_lessons = []
@@ -469,7 +473,7 @@ def _reorganize_unit_lessons(units, rules):
                 all_lessons.append(item)
 
         if not groups or not all_lessons:
-            continue  # 无栏目（数学等）或无课文 → 不处理
+            continue  # 无栏目或无课文 → 不处理
 
         # 清空所有栏目的 children
         for g in groups:
@@ -730,13 +734,24 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             units.append(cur_unit)
 
         if is_group:
-            # ★ L2 栏目：课文嵌套在其 children 下（三级结构：单元→栏目→课文）
+            # ★ 栏目处理：根据学科类型决定是否作为容器
+            # 语文类（语文/道德与法治/历史）：栏目是课文容器，课文嵌套在 children 下
+            # 理科类（物理/化学/地理/生物/体育/数学）：栏目是独立条目，不嵌套课文
             cur_l2 = None
-            cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
-            cur_unit['lessons'].append(cur_group)
+            is_container = rules['name'] in ('语文', '道德与法治', '历史')
+            if is_container:
+                # ★ 语文类：栏目作为容器，后续课文嵌套在 children 下
+                cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
+                cur_unit['lessons'].append(cur_group)
+            else:
+                # ★ 理科类：栏目作为独立条目（与节并列），不嵌套课文
+                cur_group = None  # ★ 重置 cur_group，后续课文直接挂到 unit.lessons
+                cur_unit['lessons'].append({
+                    'title': title, 'type': 'group', 'page': None, 'children': []
+                })
         else:
-            # ★ 课文添加到当前栏目（cur_group）的 children 下
-            # 如果没有栏目（如数学），直接添加到 unit.lessons
+            # ★ 课文添加到当前栏目（cur_group）的 children 下（仅语文类有 cur_group）
+            # 理科类或无栏目的语文 → 直接添加到 unit.lessons
             target_list = cur_group['children'] if cur_group else cur_unit['lessons']
             if is_lesson:
                 cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}
@@ -1311,13 +1326,24 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
             units.append(cur_unit)
 
         if is_group:
-            # ★ L2 栏目：课文嵌套在其 children 下
+            # ★ 栏目处理：根据学科类型决定是否作为容器
+            # 语文类（语文/道德与法治/历史）：栏目是课文容器，课文嵌套在 children 下
+            # 理科类（物理/化学/地理/生物/体育/数学）：栏目是独立条目，不嵌套课文
             cur_l2 = None
-            cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
-            cur_unit['lessons'].append(cur_group)
+            is_container = rules['name'] in ('语文', '道德与法治', '历史')
+            if is_container:
+                # ★ 语文类：栏目作为容器，后续课文嵌套在 children 下
+                cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
+                cur_unit['lessons'].append(cur_group)
+            else:
+                # ★ 理科类：栏目作为独立条目（与节并列），不嵌套课文
+                cur_group = None
+                cur_unit['lessons'].append({
+                    'title': title, 'type': 'group', 'page': None, 'children': []
+                })
         else:
-            # ★ 课文添加到当前栏目的 children 下
-            # 如果没有栏目（如数学），直接添加到 unit.lessons
+            # ★ 课文添加到当前栏目（cur_group）的 children 下（仅语文类有 cur_group）
+            # 理科类或无栏目的语文 → 直接添加到 unit.lessons
             target_list = cur_group['children'] if cur_group else cur_unit['lessons']
             if is_lesson:
                 cur_l2 = {'title': title, 'type': 'lesson', 'startPage': real_page, 'children': []}

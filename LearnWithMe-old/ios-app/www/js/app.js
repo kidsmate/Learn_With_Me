@@ -918,9 +918,12 @@ function flattenAllLessons(units) {
 }
 
 // ★ 后处理：重新分配课文到正确的栏目，确保 L1→L2→L3 结构
-// PDF 文本提取可能导致顺序混乱，使课文被分配到错误的栏目或成为直接课文
-// 例如："写作指导"被误放到"阅读"组下，或"1 春"成为直接课文（无栏目）
-function reorganizeUnitLessons(units) {
+// 仅对"栏目容器型"学科（语文/道德与法治/历史）生效
+// 理科类（物理/化学/地理等）不重组，保留原始顺序（节作为直接课文，栏目独立存在）
+function reorganizeUnitLessons(units, isContainerSubject) {
+  // ★ 理科类不重组，保留原始解析顺序
+  if (!isContainerSubject) return;
+
   for (const unit of units) {
     // 收集所有课文（直接课文 + 各栏目下的课文）
     const allLessons = [];
@@ -3266,6 +3269,25 @@ async function extractTocFromTocPages(pdf, totalPages) {
                     'Topics', 'Letters and Structures', 'Starter Units'];
   // 英语目录页码引用模式（如 "Page S1"、"Page 5"）
   const pageRefRe = /^Page\s+(S?\d+)/i;
+
+  // ★ 检测是否为"栏目容器型"学科（语文/道德与法治/历史）
+  // 特征：目录中同时出现"阅读"/"写作"等栏目关键词，且课文编号是纯数字开头（如"1 春"）
+  // 理科类（物理/化学/地理等）的课文是"第一节""课题1"等，栏目是穿插的独立条目
+  let isContainerSubject = false;
+  {
+    let hasReadingGroup = false;
+    let hasNumericLesson = false;
+    for (const p of Object.keys(pageLines).map(Number).sort((a, b) => a - b)) {
+      for (const line of pageLines[p]) {
+        const t = (line.text || '').trim();
+        if (t === '阅读' || t === '写作' || t === '口语交际' || t === '综合性学习') hasReadingGroup = true;
+        if (/^\d+\*?\s+[^\d]/.test(t) || /^\d+\*?\s*[.．、]\s*\S/.test(t)) hasNumericLesson = true;
+      }
+    }
+    isContainerSubject = hasReadingGroup && hasNumericLesson;
+    console.log('[目录页提取] 容器型学科检测:', isContainerSubject, '(有栏目:', hasReadingGroup, ', 数字编号课文:', hasNumericLesson, ')');
+  }
+
   // 圈码→数字
   function circledToNum(text) {
     text = text.trim();
@@ -3548,12 +3570,19 @@ async function extractTocFromTocPages(pdf, totalPages) {
     }
 
     if (isGroup) {
-      // ★ L2 栏目：课文嵌套在其 children 下
+      // ★ 栏目处理：根据学科类型决定是否作为容器
+      // 语文类（语文/道德与法治/历史）：栏目是课文容器，课文嵌套在 children 下
+      // 理科类（物理/化学/地理/生物/体育/数学）：栏目是独立条目，不嵌套课文
       curL2 = null;
-      curGroup = { title, type: 'group', page: null, children: [] };
-      curUnit.lessons.push(curGroup);
+      if (isContainerSubject) {
+        curGroup = { title, type: 'group', page: null, children: [] };
+        curUnit.lessons.push(curGroup);
+      } else {
+        curGroup = null;
+        curUnit.lessons.push({ title, type: 'group', page: null, children: [] });
+      }
     } else {
-      // ★ 课文添加到当前栏目的 children 下
+      // ★ 课文添加到当前栏目的 children 下（仅语文类有 curGroup）
       const targetList = curGroup ? curGroup.children : curUnit.lessons;
       if (isLesson) {
         curL2 = { title, type: 'lesson', startPage: realPage, children: [] };
@@ -3574,8 +3603,8 @@ async function extractTocFromTocPages(pdf, totalPages) {
     l.type === 'lesson' || (l.type === 'group' && (l.children || []).some(c => c.type === 'lesson'))
   );
 
-  // ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（阅读在前，课文归入栏目）
-  reorganizeUnitLessons(units);
+  // ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（仅对容器型学科）
+  reorganizeUnitLessons(units, isContainerSubject);
 
   // ★ 英语表格式目录的单元可能没有课文条目（Section A/B 不在目录中列出）
   // 为这些单元添加占位课文，确保每个单元至少有一个可点击的书签
@@ -3889,8 +3918,8 @@ async function extractTocByFontSize(pdf) {
     }
   }
 
-  // ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（阅读在前，课文归入栏目）
-  reorganizeUnitLessons(units);
+  // ★ 后处理：重组结构（字号提取场景默认不重组，保留原始顺序）
+  reorganizeUnitLessons(units, false);
 
   // 计算 endPage
   const allLessons = flattenAllLessons(units);
