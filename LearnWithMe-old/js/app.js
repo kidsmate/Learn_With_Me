@@ -927,33 +927,61 @@ function flattenAllLessons(units) {
   return all;
 }
 
-// ★ 后处理：将直接课文（未分组的）移入"阅读"组，确保 L1→L2→L3 结构
-// PDF 文本提取可能打乱顺序，导致"阅读"栏目出现在课文之后
+// ★ 后处理：重新分配课文到正确的栏目，确保 L1→L2→L3 结构
+// PDF 文本提取可能导致顺序混乱，使课文被分配到错误的栏目或成为直接课文
+// 例如："写作指导"被误放到"阅读"组下，或"1 春"成为直接课文（无栏目）
 function reorganizeUnitLessons(units) {
   for (const unit of units) {
-    const directLessons = unit.lessons.filter(l => l.type === 'lesson');
-    const groups = unit.lessons.filter(l => l.type === 'group');
-    if (directLessons.length === 0 || groups.length === 0) continue;
+    // 收集所有课文（直接课文 + 各栏目下的课文）
+    const allLessons = [];
+    const groups = [];
+    for (const item of unit.lessons) {
+      if (item.type === 'group') {
+        groups.push(item);
+        for (const child of (item.children || [])) {
+          allLessons.push(child);
+        }
+      } else if (item.type === 'lesson' || item.type === 'sublesson') {
+        allLessons.push(item);
+      }
+    }
+    if (groups.length === 0 || allLessons.length === 0) continue;
 
-    // 查找已有的"阅读"组（可能为空，因为出现在课文之后）
-    let readingGroup = null;
-    const otherGroups = [];
-    for (const g of groups) {
-      if (g.title === '阅读' && !readingGroup) {
-        readingGroup = g;
-      } else {
-        otherGroups.push(g);
+    // 清空所有栏目的 children
+    for (const g of groups) g.children = [];
+    const groupTitles = groups.map(g => g.title || '');
+
+    // 重新分配每个课文到正确的栏目
+    for (const lesson of allLessons) {
+      const title = lesson.title || '';
+      let assigned = false;
+      // 优先：标题包含某栏目名 → 分配到该栏目（长名优先）
+      const sorted = groupTitles.map((t, i) => ({ i, t })).sort((a, b) => b.t.length - a.t.length);
+      for (const { i, t } of sorted) {
+        if (t && t.length >= 2 && title.includes(t)) {
+          groups[i].children.push(lesson);
+          assigned = true;
+          break;
+        }
+      }
+      if (!assigned) {
+        // 未匹配栏目 → 分配到"阅读"栏目（或第一个栏目）
+        const rIdx = groupTitles.findIndex(t => t === '阅读');
+        if (rIdx >= 0) groups[rIdx].children.push(lesson);
+        else groups[0].children.push(lesson);
       }
     }
 
-    if (readingGroup) {
-      const existing = readingGroup.children || [];
-      readingGroup.children = existing.concat(directLessons);
-    } else {
-      readingGroup = { title: '阅读', type: 'group', page: null, children: directLessons };
+    // 按页码排序栏目内课文
+    for (const g of groups) {
+      g.children.sort((a, b) => (a.startPage || 1) - (b.startPage || 1));
     }
-    // 重构：阅读组在前，其他组在后
-    unit.lessons = [readingGroup].concat(otherGroups);
+
+    // 过滤空栏目，"阅读"在前
+    const nonEmpty = groups.filter(g => g.children.length > 0);
+    const reading = nonEmpty.filter(g => g.title === '阅读');
+    const others = nonEmpty.filter(g => g.title !== '阅读');
+    unit.lessons = reading.concat(others);
   }
 }
 
@@ -3987,24 +4015,8 @@ async function extractTocByFontSize(pdf) {
     }
   }
 
-  // 清理空栏目和空单元
-  for (const u of units) {
-    const cleaned = [];
-    for (let i = 0; i < u.lessons.length; i++) {
-      const l = u.lessons[i];
-      if (l.type === 'group') {
-        let hasLessonAfter = false;
-        for (let j = i + 1; j < u.lessons.length; j++) {
-          if (u.lessons[j].type === 'group') break;
-          if (u.lessons[j].type === 'lesson') { hasLessonAfter = true; break; }
-        }
-        if (hasLessonAfter) cleaned.push(l);
-      } else {
-        cleaned.push(l);
-      }
-    }
-    u.lessons = cleaned;
-  }
+  // ★ 后处理：重组结构，确保 L1→L2→L3 层级正确（阅读在前，课文归入栏目）
+  reorganizeUnitLessons(units);
 
   // 计算 endPage
   const allLessons = flattenAllLessons(units);

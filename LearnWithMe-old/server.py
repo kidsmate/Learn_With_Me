@@ -441,43 +441,76 @@ def _find_lesson_pdf_page_by_title(page_lines, title, toc_pages, start_search_pa
 
 
 def _reorganize_unit_lessons(units, rules):
-    """后处理：将直接课文（未分组的）移入"阅读"组，确保 L1→L2→L3 结构。
+    """后处理：重新分配课文到正确的栏目，确保 L1→L2→L3 结构。
 
-    语文课本目录结构：单元(L1)→栏目(L2,如阅读/写作)→课文(L3)
-    PDF 文本提取可能打乱顺序，导致"阅读"栏目出现在课文之后。
-    本函数将先出现的课文归入"阅读"组，并确保"阅读"在最前。
+    PDF 文本提取可能导致顺序混乱，使课文被分配到错误的栏目或成为直接课文。
+    例如："写作指导"被误放到"阅读"组下，或"1 春"成为直接课文（无栏目）。
 
-    仅对有栏目的单元生效（数学等无栏目的学科不受影响）。
+    本函数：
+    1. 收集所有课文（含子篇目，保留 lesson→sublesson 结构）
+    2. 清空所有栏目
+    3. 根据课文标题重新分配到正确栏目：
+       - 标题包含栏目名 → 分配到该栏目（如"写作指导"含"写作" → "写作"栏目）
+       - 未匹配 → 分配到"阅读"栏目（或第一个栏目）
+    4. 按页码排序栏目内课文
+    5. 过滤空栏目，确保"阅读"栏目在前
     """
     for unit in units:
-        direct_lessons = [l for l in unit['lessons'] if l.get('type') == 'lesson']
-        groups = [l for l in unit['lessons'] if l.get('type') == 'group']
+        # 收集所有课文（直接课文 + 各栏目下的课文）
+        all_lessons = []
+        groups = []
 
-        if not direct_lessons or not groups:
-            continue
+        for item in unit['lessons']:
+            if item.get('type') == 'group':
+                groups.append(item)
+                for child in item.get('children', []):
+                    all_lessons.append(child)
+            elif item.get('type') in ('lesson', 'sublesson'):
+                all_lessons.append(item)
 
-        # 查找已有的"阅读"组（可能为空，因为出现在课文之后）
-        reading_group = None
-        other_groups = []
+        if not groups or not all_lessons:
+            continue  # 无栏目（数学等）或无课文 → 不处理
+
+        # 清空所有栏目的 children
         for g in groups:
-            if g.get('title') == '阅读' and reading_group is None:
-                reading_group = g
-            else:
-                other_groups.append(g)
+            g['children'] = []
 
-        if reading_group:
-            # 将直接课文合并到"阅读"组
-            existing = reading_group.get('children') or []
-            reading_group['children'] = existing + direct_lessons
-        else:
-            # 创建新的"阅读"组
-            reading_group = {
-                'title': '阅读', 'type': 'group',
-                'page': None, 'children': direct_lessons
-            }
+        group_titles = [g.get('title', '') for g in groups]
 
-        # 重构：阅读组在前，其他组在后
-        unit['lessons'] = [reading_group] + other_groups
+        # 重新分配每个课文到正确的栏目
+        for lesson in all_lessons:
+            title = lesson.get('title', '')
+            assigned = False
+
+            # 优先：标题包含某栏目名 → 分配到该栏目
+            # 按栏目名长度降序匹配（长名优先，避免短名误匹配）
+            for i, gtitle in sorted(enumerate(group_titles), key=lambda x: -len(x[1])):
+                if gtitle and len(gtitle) >= 2 and gtitle in title:
+                    groups[i]['children'].append(lesson)
+                    assigned = True
+                    break
+
+            if not assigned:
+                # 未匹配栏目 → 分配到"阅读"栏目（或第一个栏目）
+                reading_idx = None
+                for i, gtitle in enumerate(group_titles):
+                    if gtitle == '阅读':
+                        reading_idx = i
+                        break
+                if reading_idx is not None:
+                    groups[reading_idx]['children'].append(lesson)
+                else:
+                    groups[0]['children'].append(lesson)
+
+        # 按页码排序栏目内课文
+        for g in groups:
+            g['children'].sort(key=lambda l: l.get('startPage', 1) or 1)
+
+        # 过滤空栏目，"阅读"在前
+        non_empty = [g for g in groups if g.get('children')]
+        reading = [g for g in non_empty if g.get('title') == '阅读']
+        others = [g for g in non_empty if g.get('title') != '阅读']
+        unit['lessons'] = reading + others
 
 
 def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_pages):
@@ -1716,6 +1749,7 @@ def parse_existing_toc(toc_list, total_pages, rules):
     units = []
     cur_unit = None
     cur_l2 = None
+    cur_group = None
 
     # 统计最大层级，判断是否有层级结构
     max_level = max((e[0] for e in toc_list if len(e) >= 3), default=1)
@@ -1733,17 +1767,36 @@ def parse_existing_toc(toc_list, total_pages, rules):
             cur_unit = {'title': title, 'page': page, 'lessons': []}
             units.append(cur_unit)
             cur_l2 = None
+            cur_group = None
         elif level == 2:
             if cur_unit is None:
                 cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
                 units.append(cur_unit)
-            cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
-            cur_unit['lessons'].append(cur_l2)
+            # ★ 判断 level 2 是栏目(group)还是课文(lesson)
+            # 短关键词(≤2字)精确匹配，长关键词子串匹配
+            is_grp = any(
+                (len(kw) <= 2 and title == kw) or (len(kw) > 2 and kw in title)
+                for kw in rules['group_kws']
+            )
+            if is_grp:
+                # ★ 栏目 → group 类型，课文嵌套在 children 下
+                cur_group = {'title': title, 'type': 'group', 'page': None, 'children': []}
+                cur_unit['lessons'].append(cur_group)
+                cur_l2 = None
+            else:
+                # ★ 课文 → lesson 类型
+                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+                target = cur_group['children'] if cur_group else cur_unit['lessons']
+                target.append(cur_l2)
         else:  # level >= 3
             if cur_l2 is not None:
                 cur_l2['children'].append({'title': title, 'type': 'sublesson', 'startPage': page})
+            elif cur_group is not None:
+                # 无 L2 父但有栏目 → 创建 lesson 挂到栏目下
+                cur_l2 = {'title': title, 'type': 'lesson', 'startPage': page, 'children': []}
+                cur_group['children'].append(cur_l2)
             elif cur_unit is not None:
-                # 无 L2 父 → 当作独立 lesson
+                # 无 L2 父也无栏目 → 当作独立 lesson
                 cur_unit['lessons'].append({'title': title, 'type': 'lesson', 'startPage': page, 'children': []})
 
     # 容错：若书签全部为 level 1，将它们合并为一个"全书目录"单元下的 lesson
@@ -1763,6 +1816,9 @@ def parse_existing_toc(toc_list, total_pages, rules):
                 'title': u['title'], 'type': 'lesson',
                 'startPage': u['page'], 'children': []
             })
+
+    # ★ 后处理：重组结构，确保 L1→L2→L3 层级正确
+    _reorganize_unit_lessons(units, rules)
 
     _compute_endpages_v2(units, total_pages)
 
