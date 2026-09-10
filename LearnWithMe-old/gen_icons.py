@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成安冉的学习助手应用图标 (PNG) - 仅使用内置库"""
+"""生成 LearnWithMe 应用图标 (PNG) - 仅使用内置库"""
 import struct
 import zlib
 
