@@ -729,9 +729,14 @@ def _parse_toc_page(page_lines, page_num_lines, toc_pages, rules, offset, total_
             # 直接跳过这个栏目（它属于尚未出现的单元，后面单元出现时会重新出现）
             if is_group:
                 continue
-            # 课文在单元标题前出现（罕见），创建占位单元
-            cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
-            units.append(cur_unit)
+            # ★ 前言类课文（如"致同学们""科学之旅"）出现在所有单元之前
+            # 不创建"未命名单元"，直接当作独立课文条目，后续真正的单元标题出现后正常处理
+            if is_lesson or book_page is not None:
+                # 创建一个隐藏的"前言"单元，承载这类条目
+                cur_unit = {'title': '前言', 'page': real_page, 'lessons': []}
+                units.append(cur_unit)
+            else:
+                continue
 
         if is_group:
             # ★ 栏目处理：根据学科类型决定是否作为容器
@@ -1321,9 +1326,14 @@ def _parse_ocr_toc_lines(ocr_lines, rules, total_pages):
             # 直接跳过这个栏目（它属于尚未出现的单元，后面单元出现时会重新出现）
             if is_group:
                 continue
-            # 课文在单元标题前出现（罕见），创建占位单元
-            cur_unit = {'title': '未命名单元', 'page': real_page, 'lessons': []}
-            units.append(cur_unit)
+            # ★ 前言类课文（如"致同学们""科学之旅"）出现在所有单元之前
+            # 不创建"未命名单元"，直接当作独立课文条目，后续真正的单元标题出现后正常处理
+            if is_lesson or book_page is not None:
+                # 创建一个隐藏的"前言"单元，承载这类条目
+                cur_unit = {'title': '前言', 'page': real_page, 'lessons': []}
+                units.append(cur_unit)
+            else:
+                continue
 
         if is_group:
             # ★ 栏目处理：根据学科类型决定是否作为容器
@@ -1796,7 +1806,9 @@ def parse_existing_toc(toc_list, total_pages, rules):
             cur_group = None
         elif level == 2:
             if cur_unit is None:
-                cur_unit = {'title': '未命名单元', 'page': page, 'lessons': []}
+                # ★ 前言类课文（如"致同学们""科学之旅"）出现在所有单元之前
+                # 创建"前言"单元承载，不创建"未命名单元"
+                cur_unit = {'title': '前言', 'page': page, 'lessons': []}
                 units.append(cur_unit)
             # ★ 判断 level 2 是栏目(group)还是课文(lesson)
             # 短关键词(≤2字)精确匹配，长关键词子串匹配

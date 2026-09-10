@@ -3687,8 +3687,14 @@ async function extractTocFromTocPages(pdf, totalPages) {
     if (!curUnit) {
       // ★ 栏目(阅读/写作)在单元标题前出现时，不要创建"未命名单元"
       if (isGroup) continue;
-      curUnit = { title: '未命名单元', page: realPage, lessons: [] };
-      units.push(curUnit);
+      // ★ 前言类课文（如"致同学们""科学之旅"）出现在所有单元之前
+      // 创建"前言"单元承载，不创建"未命名单元"
+      if (isLesson || bookPage !== null) {
+        curUnit = { title: '前言', page: realPage, lessons: [] };
+        units.push(curUnit);
+      } else {
+        continue;
+      }
     }
 
     if (isGroup) {
