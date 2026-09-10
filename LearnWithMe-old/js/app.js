@@ -73,21 +73,105 @@ function findTextbookForSubject(subject) {
  * 从 PDF 教材的 units / chapters 构造与内置 SUBJECTS 同结构的章节列表
  * 优先使用 units（新版含 lessons），回退到 chapters（旧版字符串数组）
  */
+/**
+ * 根据 textbook.units 构建 allLessons 扁平表（与 renderBookReader 保持完全一致的逻辑）
+ * 返回 [{ unitTitle, ui, li, gi, subIdx, title, startPage, __isGroupSelf, ...原始字段 }]
+ */
+function buildFlatLessonsFromUnits(units) {
+  const all = [];
+  (units || []).forEach((u, ui) => {
+    (u.lessons || []).forEach((l, li) => {
+      if (l.type === 'group') {
+        const kids = (l.children || []).filter(cl => cl.type === 'lesson');
+        if (kids.length > 0) {
+          // 容器学科：group 是容器，children 才是可导航课文
+          kids.forEach((cl, cli) => {
+            all.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: -1, __isGroupSelf: false, ...cl });
+            (cl.children || []).forEach((sub, si) => {
+              all.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: si, __isGroupSelf: false, ...sub });
+            });
+          });
+        } else if (l.startPage || l.page) {
+          // 非容器学科：group 自己带页码，是独立可导航项（如"阅读与思考"/"科学世界"）
+          all.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, __isGroupSelf: true, ...l, startPage: l.startPage || l.page });
+        }
+      } else if (l.type === 'lesson') {
+        all.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, __isGroupSelf: false, ...l });
+        (l.children || []).forEach((sub, si) => {
+          all.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: si, __isGroupSelf: false, ...sub });
+        });
+      }
+    });
+  });
+  return all;
+}
+
 function buildChaptersFromTextbook(textbook) {
   if (!textbook) return [];
   // 新版：units 含 lessons
   if (textbook.units && textbook.units.length > 0) {
-    return textbook.units.map((u, i) => {
-      const lessons = (u.lessons || []).map((l, j) => ({
-        id: `${textbook.id}-u${i}-l${j}`,
-        title: l.title || `第${j+1}节`,
-        content: l.content || ''
-      }));
-      return {
-        title: u.title || `第${i+1}单元`,
-        points: lessons
-      };
+    const flat = buildFlatLessonsFromUnits(textbook.units);
+    // 同时把 type='group' 也作为单独条目列出（点击时跳它的第一篇课文或它自己）
+    const groupEntries = [];
+    textbook.units.forEach((u, ui) => {
+      (u.lessons || []).forEach((l, li) => {
+        if (l.type !== 'group') return;
+        // 找这个 group 对应的跳转目标 flatIdx
+        let targetFlat = -1;
+        const kids = (l.children || []).filter(cl => cl.type === 'lesson');
+        if (kids.length > 0) {
+          targetFlat = flat.findIndex(x => x.ui === ui && x.li === li && x.gi === 0 && x.subIdx === -1);
+        } else if (l.startPage || l.page) {
+          targetFlat = flat.findIndex(x => x.ui === ui && x.li === li && x.__isGroupSelf);
+        }
+        groupEntries.push({ ui, li, title: l.title, groupTitle: l.title, targetFlat });
+      });
     });
+
+    // 按 unit 组装 chapters：先列 group 条目，再列该 unit 下的具体课文
+    const byUnit = {};
+    flat.forEach((x, i) => {
+      if (!byUnit[x.ui]) byUnit[x.ui] = { title: textbook.units[x.ui].title, points: [] };
+      byUnit[x.ui].points.push({
+        id: textbook.id + '-f' + i,
+        title: x.title,
+        groupTitle: x.__isGroupSelf ? x.title : (textbook.units[x.ui].lessons[x.li] && textbook.units[x.ui].lessons[x.li].type === 'group' ? textbook.units[x.ui].lessons[x.li].title : null),
+        textbookId: textbook.id,
+        flatIdx: i,
+        startPage: x.startPage,
+        _kind: x.__isGroupSelf ? 'group' : 'lesson',
+      });
+    });
+
+    // 插入 group 自身条目（排在它的 children 之前）
+    groupEntries.forEach(g => {
+      if (g.targetFlat < 0) return;
+      if (!byUnit[g.ui]) byUnit[g.ui] = { title: textbook.units[g.ui].title, points: [] };
+      // 看这个 group 的 children 第一个 flatIdx 是多少，插在它前面
+      const insertBefore = byUnit[g.ui].points.findIndex(p => p.unitIdx === undefined && p._kind !== 'group' && p.groupTitle === g.groupTitle);
+      const point = {
+        id: textbook.id + '-g-' + g.ui + '-' + g.li,
+        title: g.title,
+        groupTitle: g.title,
+        textbookId: textbook.id,
+        flatIdx: g.targetFlat,
+        startPage: null,
+        _kind: 'group-header',
+      };
+      if (insertBefore >= 0) {
+        byUnit[g.ui].points.splice(insertBefore, 0, point);
+      } else {
+        byUnit[g.ui].points.push(point);
+      }
+    });
+
+    // 排序：按 unitIdx，同 unit 内保持原顺序（group-header 在前，children 在后）
+    const ordered = Object.keys(byUnit).map(k => byUnit[k]).sort((a, b) => {
+      const ai = textbook.units.findIndex(u => u.title === a.title);
+      const bi = textbook.units.findIndex(u => u.title === b.title);
+      return ai - bi;
+    });
+    return ordered;
   }
   // 旧版：chapters 是字符串数组
   if (textbook.chapters && textbook.chapters.length > 0) {
@@ -456,15 +540,20 @@ function openSubject(subjectId) {
         <div class="section-title" style="color:${currentSubject.color}">📚 ${c.title}</div>
         ${(c.points || []).map(p => {
           const isLearned = !!state.learnedPoints[p.id];
-          const clickHandler = fromTextbook
-            ? `openTextbookBySubject('${currentSubject.id}')`
-            : `openKnowledge('${currentSubject.id}','${p.id}')`;
+          const subLabel = p.groupTitle && p._kind !== 'group-header'
+            ? `${c.title} · ${p.groupTitle}`
+            : c.title;
+          const clickHandler = fromTextbook && p.textbookId && typeof p.flatIdx === 'number'
+            ? `viewTextbookAndSelect('${p.textbookId}', ${p.flatIdx})`
+            : (fromTextbook
+                ? `openTextbookBySubject('${currentSubject.id}')`
+                : `openKnowledge('${currentSubject.id}','${p.id}')`);
           return `
             <div class="kp-item ${isLearned ? 'learned' : ''}" onclick="${clickHandler}">
               <div class="kp-status">${isLearned ? '✓' : ''}</div>
               <div class="kp-info">
                 <div class="kp-title">${p.title}</div>
-                <div class="kp-chapter">${c.title}</div>
+                <div class="kp-chapter">${subLabel}</div>
               </div>
               <div class="kp-action">${fromTextbook ? '📖阅读' : (isLearned ? '已掌握' : '去学习')}</div>
             </div>
@@ -477,12 +566,30 @@ function openSubject(subjectId) {
   navigate('subject-detail');
 }
 
-// 通过学科打开对应 PDF 教材阅读器
+// 通过学科打开对应 PDF 教材阅读器（跳到第一篇）
 function openTextbookBySubject(subjectId) {
   const subj = SUBJECTS.find(s => s.id === subjectId);
   if (!subj) return;
   const tb = findTextbookForSubject(subj);
-  if (tb) openTextbook(tb.id);
+  if (tb) viewTextbookAndSelect(tb.id, 0);
+}
+
+/**
+ * 打开教材阅读器并自动选中指定 flatIdx 的条目
+ * @param {string} textbookId 教材 id
+ * @param {number} flatIdx 目标课文在 allLessons 扁平表中的索引（0 基）
+ */
+function viewTextbookAndSelect(textbookId, flatIdx) {
+  viewTextbook(textbookId);
+  // viewTextbook 已同步渲染完阅读器（调用 renderBookReader），
+  // renderBookReader 内部会写入 window._tbLessons['m'] 和 window._tbSelection['m']
+  // 所以这里可以直接 selectBookLesson
+  flatIdx = flatIdx || 0;
+  // 边界保护：确保 flatIdx 在范围内
+  const lessons = window._tbLessons && window._tbLessons['m'];
+  if (lessons && lessons[flatIdx]) {
+    selectBookLesson('m', flatIdx);
+  }
 }
 
 // ============ 知识点详情（学习页）============

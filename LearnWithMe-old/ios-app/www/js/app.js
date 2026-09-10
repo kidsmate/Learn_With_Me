@@ -11,95 +11,35 @@ let currentPdfData = null;
 // 可选年级（按用户实际学习进度切换，默认七年级上学期）
 const GRADES = ['七年级上', '七年级下', '八年级上', '八年级下', '九年级上', '九年级下'];
 
-/**
- * 判断章节是否属于当前年级
- * chapter.title 形如 "七年级上册 · 第一单元" / "七年级下册 · ..." / "八年级 · ..." / "九年级 · ..."
- * state.currentGrade 形如 "七年级上"
- *
- * 匹配规则：
- *  - "七年级上" 匹配标题以 "七年级上册" 开头的章节
- *  - "七年级下" 匹配标题以 "七年级下册" 开头的章节
- *  - 八/九年级上下同理
- *  - 标题形如 "七年级 · ..."（不带上下册）当作"七年级上"和"七年级下"都可见
- */
-function chapterMatchesGrade(chapter, grade) {
-  if (!grade) return true;
-  const t = chapter.title || '';
-  const lower = grade.endsWith('上') ? grade.slice(0, -1) + '上册'
-              : grade.endsWith('下') ? grade.slice(0, -1) + '下册'
-              : grade;
-  if (t.startsWith(lower)) return true;
-  // 不带"上下册"的章节（如 "七年级 · ..."），按"上/下"都能看到
-  const bare = grade.replace(/[上下]$/, '');
-  if (t.startsWith(bare + ' ·') || t.startsWith(bare + '·')) return true;
-  return false;
-}
-
-/** 返回某学科在当前年级下的章节（深拷贝以避免修改原数据） */
-function getChaptersForCurrentGrade(subject) {
-  return (subject.chapters || []).filter(c => chapterMatchesGrade(c, state.currentGrade));
-}
-
-/** 返回某学科在当前年级下的可见知识点数量 */
-function countPointsForCurrentGrade(subject) {
-  let total = 0;
-  for (const c of getChaptersForCurrentGrade(subject)) {
-    total += (c.points || []).length;
-  }
-  return total;
-}
-
-/**
- * 查找某学科在当前年级下已上传的 PDF 教材
- * 匹配规则：教材 subject 字段 === 学科 name（如"语文"），且教材名含当前年级标识
- */
-function findTextbookForSubject(subject) {
-  const grade = state.currentGrade || '七年级上';
-  // 年级简称："七年级上" -> "七年级上册" 和 "七上"
-  const fullGrade = grade + '册';
-  const shortGrade = grade.replace('年级', '').replace('上', '上册').replace('下', '下册');
-  return (state.textbooks || []).find(t => {
-    if (t.subject !== subject.name) return false;
-    // 教材名包含年级标识（如"语文 七年级上册.pdf"或"七上语文.pdf"）
-    const name = t.name || '';
-    return name.includes(fullGrade) || name.includes(grade) || name.includes(shortGrade) || name.includes(grade.replace('年级',''));
-  });
-}
-
-/**
- * 从 PDF 教材的 units / chapters 构造与内置 SUBJECTS 同结构的章节列表
- * 优先使用 units（新版含 lessons），回退到 chapters（旧版字符串数组）
- */
-function buildChaptersFromTextbook(textbook) {
-  if (!textbook) return [];
-  // 新版：units 含 lessons
-  if (textbook.units && textbook.units.length > 0) {
-    return textbook.units.map((u, i) => {
-      const lessons = (u.lessons || []).map((l, j) => ({
-        id: `${textbook.id}-u${i}-l${j}`,
-        title: l.title || `第${j+1}节`,
-        content: l.content || ''
-      }));
-      return {
-        title: u.title || `第${i+1}单元`,
-        points: lessons
-      };
+function buildFlatLessonsFromUnits(units) {
+  const all = [];
+  (units || []).forEach((u, ui) => {
+    (u.lessons || []).forEach((l, li) => {
+      if (l.type === 'group') {
+        const kids = (l.children || []).filter(cl => cl.type === 'lesson');
+        if (kids.length > 0) {
+          // 容器学科：group 是容器，children 才是可导航课文
+          kids.forEach((cl, cli) => {
+            all.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: -1, __isGroupSelf: false, ...cl });
+            (cl.children || []).forEach((sub, si) => {
+              all.push({ unitTitle: u.title, ui, li, gi: cli, subIdx: si, __isGroupSelf: false, ...sub });
+            });
+          });
+        } else if (l.startPage || l.page) {
+          // 非容器学科：group 自己带页码，是独立可导航项（如"阅读与思考"/"科学世界"）
+          all.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, __isGroupSelf: true, ...l, startPage: l.startPage || l.page });
+        }
+      } else if (l.type === 'lesson') {
+        all.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: -1, __isGroupSelf: false, ...l });
+        (l.children || []).forEach((sub, si) => {
+          all.push({ unitTitle: u.title, ui, li, gi: -1, subIdx: si, __isGroupSelf: false, ...sub });
+        });
+      }
     });
-  }
-  // 旧版：chapters 是字符串数组
-  if (textbook.chapters && textbook.chapters.length > 0) {
-    return textbook.chapters.map((c, i) => ({
-      title: typeof c === 'string' ? c : (c.title || `第${i+1}章`),
-      points: []
-    }));
-  }
-  return [];
+  });
+  return all;
 }
 
-/**
- * 获取某学科在当前年级下用于展示的章节
- * 优先用已上传的 PDF 教材；无 PDF 教材时回退到内置 SUBJECTS 数据
- */
 function getDisplayChapters(subject) {
   const textbook = findTextbookForSubject(subject);
   if (textbook) {
@@ -446,15 +386,20 @@ function openSubject(subjectId) {
         <div class="section-title" style="color:${currentSubject.color}">📚 ${c.title}</div>
         ${(c.points || []).map(p => {
           const isLearned = !!state.learnedPoints[p.id];
-          const clickHandler = fromTextbook
-            ? `openTextbookBySubject('${currentSubject.id}')`
-            : `openKnowledge('${currentSubject.id}','${p.id}')`;
+          const subLabel = p.groupTitle && p._kind !== 'group-header'
+            ? `${c.title} · ${p.groupTitle}`
+            : c.title;
+          const clickHandler = fromTextbook && p.textbookId && typeof p.flatIdx === 'number'
+            ? `viewTextbookAndSelect('${p.textbookId}', ${p.flatIdx})`
+            : (fromTextbook
+                ? `openTextbookBySubject('${currentSubject.id}')`
+                : `openKnowledge('${currentSubject.id}','${p.id}')`);
           return `
             <div class="kp-item ${isLearned ? 'learned' : ''}" onclick="${clickHandler}">
               <div class="kp-status">${isLearned ? '✓' : ''}</div>
               <div class="kp-info">
                 <div class="kp-title">${p.title}</div>
-                <div class="kp-chapter">${c.title}</div>
+                <div class="kp-chapter">${subLabel}</div>
               </div>
               <div class="kp-action">${fromTextbook ? '📖阅读' : (isLearned ? '已掌握' : '去学习')}</div>
             </div>
@@ -472,7 +417,19 @@ function openTextbookBySubject(subjectId) {
   const subj = SUBJECTS.find(s => s.id === subjectId);
   if (!subj) return;
   const tb = findTextbookForSubject(subj);
-  if (tb) openTextbook(tb.id);
+  if (tb) viewTextbookAndSelect(tb.id, 0);
+}
+
+/**
+ * 打开教材阅读器并自动选中指定 flatIdx 的条目
+ */
+function viewTextbookAndSelect(textbookId, flatIdx) {
+  viewTextbook(textbookId);
+  flatIdx = flatIdx || 0;
+  const lessons = window._tbLessons && window._tbLessons['m'];
+  if (lessons && lessons[flatIdx]) {
+    selectBookLesson('m', flatIdx);
+  }
 }
 
 // ============ 知识点详情（学习页）============
