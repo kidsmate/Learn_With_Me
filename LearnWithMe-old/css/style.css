@@ -1699,6 +1699,20 @@ html, body {
   cursor: default;
 }
 
+.tb-toc-group.clickable {
+  cursor: pointer;
+  opacity: 1;
+  border-radius: 8px;
+  margin: 2px 4px;
+  padding: 8px 12px 4px 18px;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+.tb-toc-group.clickable:hover {
+  background: var(--primary-light, rgba(99,102,241,0.08));
+  color: var(--primary);
+}
+
 .tb-toc-item {
   display: flex;
   align-items: center;

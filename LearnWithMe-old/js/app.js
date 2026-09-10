@@ -1056,8 +1056,17 @@ function renderBookReader(units, ti, point) {
     html += `<div class="tb-toc-unit-label">${escapeHtml(u.title)}</div>`;
     u.lessons.forEach((l, li) => {
       if (l.type === 'group') {
-        // ★ L2 栏目标题（阅读/写作），不可点击
-        html += `<div class="tb-toc-group">${escapeHtml(l.title)}</div>`;
+        // ★ L2 栏目标题（阅读/写作），点击跳转至栏目下第一篇课文
+        const firstChildIdx = (l.children || []).findIndex(cl => cl.type === 'lesson');
+        let groupFIdx = -1;
+        if (firstChildIdx >= 0) {
+          groupFIdx = allLessons.findIndex(x => x.ui === ui && x.li === li && x.gi === firstChildIdx && x.subIdx === -1);
+        }
+        if (groupFIdx >= 0) {
+          html += `<div class="tb-toc-group clickable" onclick="selectBookLesson('${ti}', ${groupFIdx})">${escapeHtml(l.title)}</div>`;
+        } else {
+          html += `<div class="tb-toc-group">${escapeHtml(l.title)}</div>`;
+        }
         // ★ L3 栏目下的课文，可点击
         (l.children || []).forEach((cl, cli) => {
           if (cl.type !== 'lesson') return;
@@ -1199,10 +1208,10 @@ function selectBookLesson(ti, fIdx) {
   const l = lessons[fIdx];
   window._tbSelection[ti] = { flatIdx: fIdx };
 
-  // 更新目录高亮
-  document.querySelectorAll(`#tb-toc-list-${ti} .tb-toc-item`).forEach((el, idx) => {
-    el.classList.toggle('active', idx === fIdx);
-  });
+  // 更新目录高亮（基于 id 精确匹配，避免 group/div 导致的下标错位）
+  document.querySelectorAll(`#tb-toc-list-${ti} .tb-toc-item`).forEach(el => el.classList.remove('active'));
+  const target = document.getElementById(`tb-toc-item-${ti}-${fIdx}`);
+  if (target) target.classList.add('active');
 
   // 更新单元、标题
   const unitEl = document.getElementById(`tb-content-unit-${ti}`);
