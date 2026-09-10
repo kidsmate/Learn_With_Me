@@ -1849,12 +1849,50 @@ html, body {
   padding: 4px 10px;
 }
 
+/* ★ 旧导航控件全部隐藏（整本连续滚动模式已取代） */
+.tb-content-nav,
+.tb-offset-bar,
+.pdf-page-info,
+.pdf-page-badge { display: none !important; }
+
+/* 整本 PDF 连续滚动容器（手指上下滑即翻页） */
+.pdf-full-book {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+.pdf-page-wrap {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 0 16px;
+  background: white;
+  page-break-after: always;
+}
+.pdf-canvas-full {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  margin: 0 auto;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  background: white;
+}
+
+/* tb-content-body 适配整本连续滚动模式：必须撑满剩余高度 + 原生滚动 */
 .tb-content-body {
   flex: 1;
+  min-height: 0;              /* flex 子项可收缩，让 overflow-y 生效 */
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 28px 32px;
-  background: white;
+  -webkit-overflow-scrolling: momentum;  /* iOS 惯性滚动 */
+  overscroll-behavior: contain;           /* 防止滚动穿透 */
+  padding: 0;
+  background: #f3f4f8;
 }
 
 .tb-paragraph {

@@ -1092,32 +1092,17 @@ function renderBookReader(units, ti, point) {
 
   // ===== 右侧正文 =====
   html += `<div class="tb-content" id="tb-content-${ti}">`;
-  // 提前获取教材对象（偏移量控件需要用）
+  // 提前获取教材对象
   const textbook = window._renderedTextbook && window._renderedTextbook[ti];
   if (allLessons.length > 0) {
     const cur = allLessons[flatIdx];
+    // ★ 精简 header：只留单元 + 课文标题，去掉"上一篇/下一篇/页码偏移/上一页/下一页"全部按钮
     html += `<div class="tb-content-header">`;
     html += `<div class="tb-content-unit" id="tb-content-unit-${ti}">${escapeHtml(cur.unitTitle)}</div>`;
     html += `<h2 class="tb-content-title" id="tb-content-title-${ti}">${escapeHtml(cur.title)}</h2>`;
-    html += `<div class="tb-content-nav">`;
-    html += `<button class="btn-secondary btn-sm" onclick="navBookLesson('${ti}', -1)" ${flatIdx === 0 ? 'disabled' : ''}>← 上一篇</button>`;
-    html += `<span class="tb-content-page">${flatIdx+1} / ${allLessons.length}</span>`;
-    html += `<button class="btn-secondary btn-sm" onclick="navBookLesson('${ti}', 1)" ${flatIdx === allLessons.length-1 ? 'disabled' : ''}>下一篇 →</button>`;
-    html += `</div>`;
-    // 页码偏移调整控件（仅当有 PDF 时显示）
-    if (textbook && textbook.hasPdf) {
-      const offset = textbook.pageOffset || 0;
-      html += `<div class="tb-offset-bar">`;
-      html += `<span class="tb-offset-label">📐 页码偏移</span>`;
-      html += `<button class="btn-secondary btn-sm tb-offset-btn" onclick="adjustPageOffset('${ti}', -1)">−</button>`;
-      html += `<span class="tb-offset-value" id="tb-offset-value-${ti}">${offset}</span>`;
-      html += `<button class="btn-secondary btn-sm tb-offset-btn" onclick="adjustPageOffset('${ti}', 1)">+</button>`;
-      html += `<button class="btn-secondary btn-sm tb-offset-reset" onclick="adjustPageOffset('${ti}', 'auto')">自动</button>`;
-      html += `</div>`;
-    }
     html += `</div>`;
     html += `<div class="tb-content-body" id="tb-content-body-${ti}">`;
-    html += formatTextbookContent(cur.content);
+    html += `<div class="pdf-loading">📄 正在加载整册 PDF，请稍候...</div>`;
     html += `</div>`;
   } else {
     html += `<div class="tb-content-body" id="tb-content-body-${ti}" style="display:flex;align-items:center;justify-content:center;">
@@ -1141,22 +1126,20 @@ function renderBookReader(units, ti, point) {
   window._tbHasPdf[ti] = textbook ? !!textbook.hasPdf : false;
   console.log('[教材阅读器] ti=', ti, 'textbook=', textbook ? { id: textbook.id, hasPdf: textbook.hasPdf, units: textbook.units && textbook.units.length } : null);
 
-  // 如果有 PDF，初始也渲染 PDF 页面
+  // ★ 有 PDF → 连续渲染整本（支持手指上下滑任意翻页），然后滚到目标课文
   if (textbook && textbook.hasPdf && allLessons.length > 0) {
     const l = allLessons[flatIdx];
-    console.log('[教材阅读器] 初始渲染 PDF，课文=', l.title, 'startPage=', l.startPage, 'endPage=', l.endPage);
-    if (l.startPage) {
-      const offset = (textbook.pageOffset) || 0;
-      const sp = l.startPage + offset;
-      const ep = (l.endPage || l.startPage) + offset;
-      setTimeout(() => {
-        const bodyEl = document.getElementById(`tb-content-body-${ti}`);
-        if (bodyEl) {
-          bodyEl.innerHTML = `<div class="pdf-loading">📄 正在加载 PDF 第 ${sp} 页${ep > sp ? `（本文章 第 ${sp}-${ep} 页）` : ''}...</div>`;
-          renderPdfPage(textbook.id, sp, bodyEl, l.title, sp, ep);
-        }
-      }, 100);
-    }
+    setTimeout(async () => {
+      const bodyEl = document.getElementById(`tb-content-body-${ti}`);
+      if (!bodyEl) return;
+      // 标记当前正在看哪篇
+      bodyEl.dataset.ti = ti;
+      bodyEl.dataset.startPage = (l.startPage + (textbook.pageOffset || 0));
+      await renderPdfFullBook(textbook.id, bodyEl);
+      // 渲染完后滚到目标课文的起始页
+      const targetPage = l.startPage + (textbook.pageOffset || 0);
+      scrollToPdfPage(textbook.id, targetPage);
+    }, 100);
   } else {
     console.log('[教材阅读器] 无 PDF，显示文本内容。hasPdf=', textbook && textbook.hasPdf);
   }
@@ -1164,7 +1147,7 @@ function renderBookReader(units, ti, point) {
   return html;
 }
 
-// 选中课文（更新右侧正文，优先渲染 PDF 页面）
+// 选中课文（目录点击 → 更新高亮 + 标题 + 滚动到对应 PDF 页）
 function selectBookLesson(ti, fIdx) {
   const lessons = window._tbLessons && window._tbLessons[ti];
   if (!lessons || !lessons[fIdx]) return;
@@ -1176,40 +1159,20 @@ function selectBookLesson(ti, fIdx) {
   const target = document.getElementById(`tb-toc-item-${ti}-${fIdx}`);
   if (target) target.classList.add('active');
 
-  // 更新单元、标题
+  // 更新单元、标题（只改文字，不重渲染 PDF）
   const unitEl = document.getElementById(`tb-content-unit-${ti}`);
   if (unitEl) unitEl.textContent = l.unitTitle;
   const titleEl = document.getElementById(`tb-content-title-${ti}`);
   if (titleEl) titleEl.textContent = l.title;
 
-  // 更新导航按钮
-  const navEl = document.querySelector(`#tb-content-${ti} .tb-content-nav`);
-  if (navEl) {
-    navEl.innerHTML = `
-      <button class="btn-secondary btn-sm" onclick="navBookLesson('${ti}', -1)" ${fIdx === 0 ? 'disabled' : ''}>← 上一篇</button>
-      <span class="tb-content-page">${fIdx+1} / ${lessons.length}</span>
-      <button class="btn-secondary btn-sm" onclick="navBookLesson('${ti}', 1)" ${fIdx === lessons.length-1 ? 'disabled' : ''}>下一篇 →</button>
-    `;
-  }
-
-  // 渲染 PDF 页面（优先）或文本内容
-  const bodyEl = document.getElementById(`tb-content-body-${ti}`);
+  // ★ 滚到目标课文的起始 PDF 页（PDF 正文已经是整本连续渲染好的）
   const textbookId = window._tbTextbookId && window._tbTextbookId[ti];
   const hasPdf = window._tbHasPdf && window._tbHasPdf[ti];
-
   if (hasPdf && textbookId && l.startPage) {
     const offset = getPageOffset(textbookId);
     const sp = l.startPage + offset;
-    const ep = (l.endPage || l.startPage) + offset;
-    bodyEl.innerHTML = `<div class="pdf-loading">📄 正在加载 PDF 第 ${sp} 页${ep > sp ? `（本文章 第 ${sp}-${ep} 页）` : ''}...</div>`;
-    renderPdfPage(textbookId, sp, bodyEl, l.title, sp, ep);
-  } else {
-    bodyEl.innerHTML = formatTextbookContent(l.content);
+    scrollToPdfPage(textbookId, sp);
   }
-
-  // 滚动正文到顶部
-  const contentEl = document.getElementById(`tb-content-${ti}`);
-  if (contentEl) contentEl.scrollTop = 0;
 }
 
 // 获取教材的页码偏移量
@@ -1286,6 +1249,112 @@ async function adjustPageOffset(ti, delta) {
 }
 
 // 用 PDF.js 渲染指定页码到容器
+
+// ========= 整本 PDF 连续渲染（支持手指上下滑自由翻页） =========
+// 缓存：window._fullBookCache[textbookId] = { doc, container: <div> 包含所有 canvas }
+window._fullBookCache = window._fullBookCache || {};
+
+async function renderPdfFullBook(textbookId, container) {
+  try {
+    // 已经渲染过这本教材 → 直接把缓存的 DOM 搬过来，秒开
+    const cached = window._fullBookCache[textbookId];
+    if (cached && cached.container && cached.container.isConnected === false) {
+      console.log('[整本PDF] 复用已渲染的 DOM 缓存:', textbookId);
+      container.innerHTML = '';
+      container.appendChild(cached.container);
+      return;
+    }
+    if (cached && cached.container && cached.container.isConnected) {
+      // 还在原来的位置，clone 一份搬过来
+      console.log('[整本PDF] 同 DOM 已连接，clone:', textbookId);
+      container.innerHTML = '';
+      const clone = cached.container.cloneNode(true);
+      container.appendChild(clone);
+      // 更新缓存引用
+      cached.container = clone;
+      return;
+    }
+
+    // 首次渲染整本
+    const doc = await getPdfDoc(textbookId);
+    if (!doc) {
+      container.innerHTML = `<div class="empty-state"><div class="empty-icon">📄</div><p>PDF 文件未找到，请重新上传教材</p></div>`;
+      return;
+    }
+
+    container.innerHTML = `<div class="pdf-loading">📄 整册加载中 0 / ${doc.numPages}...</div>`;
+
+    const bookDiv = document.createElement('div');
+    bookDiv.className = 'pdf-full-book';
+
+    // scale 取 1.2（比原来的 1.5 省内存，移动端也清晰）
+    const SCALE = 1.2;
+
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const viewport = page.getViewport({ scale: SCALE });
+
+      const pageWrap = document.createElement('div');
+      pageWrap.className = 'pdf-page-wrap';
+      pageWrap.id = `pdf-page-${textbookId}-${p}`;
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pdf-canvas-full';
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      pageWrap.appendChild(canvas);
+      bookDiv.appendChild(pageWrap);
+
+      // 每 5 页更新一次进度
+      if (p % 5 === 0 || p === doc.numPages) {
+        const loading = container.querySelector('.pdf-loading');
+        if (loading) loading.textContent = `📄 整册加载中 ${p} / ${doc.numPages}...`;
+        // 把已经渲染好的先 append 进去，让用户能看到渐进效果
+        if (p === 5) {
+          container.innerHTML = '';
+          container.appendChild(bookDiv);
+        }
+      }
+    }
+
+    container.innerHTML = '';
+    container.appendChild(bookDiv);
+
+    // 缓存整本 DOM（下次打开同本教材直接复用）
+    window._fullBookCache[textbookId] = { doc, container: bookDiv, numPages: doc.numPages };
+    console.log('[整本PDF] 渲染完成:', textbookId, '共', doc.numPages, '页');
+
+  } catch (err) {
+    console.error('整册 PDF 渲染失败:', err);
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><p>PDF 渲染失败：${err.message || '未知错误'}</p></div>`;
+  }
+}
+
+// 滚到整本教材中指定页
+function scrollToPdfPage(textbookId, pageNum) {
+  if (!pageNum) return;
+  const el = document.getElementById(`pdf-page-${textbookId}-${pageNum}`);
+  if (!el) {
+    console.warn('[scrollToPdfPage] 找不到 pdf-page-' + textbookId + '-' + pageNum);
+    return;
+  }
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // 额外再确保一下（某些移动端浏览器 scrollIntoView 不触发原生 scroll）
+  requestAnimationFrame(() => {
+    const top = el.getBoundingClientRect().top;
+    const container = el.closest('.tb-content-body') || el.parentElement;
+    if (container) {
+      container.scrollTop = container.scrollTop + top - 20;
+    }
+  });
+}
+
+
 async function renderPdfPage(textbookId, pageNum, container, lessonTitle, startPage, endPage) {
   try {
     const doc = await getPdfDoc(textbookId);
