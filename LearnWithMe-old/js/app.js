@@ -175,7 +175,7 @@ async function getPdfDoc(textbookId, arrayBuffer) {
     return null;
   }
   console.log('[PDF] PDF 数据大小:', arrayBuffer.byteLength, 'bytes');
-  const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const doc = await pdfjsLib.getDocument({ data: arrayBuffer, disableWorker: true }).promise;
   console.log('[PDF] 文档加载成功，共', doc.numPages, '页');
   _pdfDocCache[textbookId] = doc;
   return doc;
@@ -187,10 +187,11 @@ function init() {
   setupEventListeners();
   // 设置 PDF.js worker + cMap（本地化，支持 iPad/WKWebView 离线运行）
   if (window.pdfjsLib) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'libs/pdf.worker.min.js';
+    // ★ 用绝对路径 /libs/... 避免预览 URL 下相对路径解析成外部链接
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/libs/pdf.worker.min.js';
     // ★ 关键：配置 CID 字体 cMap，否则 PDF.js 能渲染但提不到中文文本
     // 人教版教材 PDF 用 CID 字体，必须有 cMap 才能 getTextContent()
-    pdfjsLib.GlobalWorkerOptions.cMapUrl = 'libs/cmaps_full/';
+    pdfjsLib.GlobalWorkerOptions.cMapUrl = '/libs/cmaps_full/';
     pdfjsLib.GlobalWorkerOptions.cMapPacked = true;
   }
 }
@@ -1947,7 +1948,7 @@ async function tocAutoExtract(textbookId) {
     // 优先：前端 PDF.js 提取（离线可用，iPad/WKWebView 友好）
     showToast('正在前端提取目录（PDF.js）...');
     const data = new Uint8Array(arrayBuffer.slice(0));
-    const pdf = await pdfjsLib.getDocument({ data }).promise;
+    const pdf = await pdfjsLib.getDocument({ data, disableWorker: true }).promise;
     const pageTexts = [];
     let fullText = '';
     for (let i = 1; i <= pdf.numPages; i++) {
@@ -2081,7 +2082,7 @@ function handlePdfUpload(file) {
       document.getElementById('pdfStatus').textContent = '正在解析 PDF...';
       document.getElementById('pdfProgressFill').style.width = '40%';
 
-      const pdf = await pdfjsLib.getDocument({ data }).promise;
+      const pdf = await pdfjsLib.getDocument({ data, disableWorker: true }).promise;
       document.getElementById('pdfStatus').textContent = `共 ${pdf.numPages} 页，正在提取文本...`;
 
       // 按页提取文本，按行组织（根据 y 坐标分行），同时记录每页在全文中的起始字符位置
