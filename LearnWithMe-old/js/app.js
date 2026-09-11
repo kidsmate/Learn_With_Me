@@ -271,11 +271,11 @@ function init() {
   setupEventListeners();
   // 设置 PDF.js worker + cMap（本地化，支持 iPad/WKWebView 离线运行）
   if (window.pdfjsLib) {
-    // ★ 用绝对路径 /libs/... 避免预览 URL 下相对路径解析成外部链接
-    pdfjsLib.GlobalWorkerOptions.workerSrc = '/libs/pdf.worker.min.js';
+    // ★ 相对当前文档解析 libs 路径，避免预览/代理子路径下绝对路径 /libs/... 404
+    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('libs/pdf.worker.min.js', document.baseURI).href;
     // ★ 关键：配置 CID 字体 cMap，否则 PDF.js 能渲染但提不到中文文本
-    // 人教版教材 PDF 用 CID 字体，必须有 cMap 才能 getTextContent()
-    pdfjsLib.GlobalWorkerOptions.cMapUrl = '/libs/cmaps_full/';
+    // 教材/真题 PDF 常用 CID 字体，必须有 cMap 才能 getTextContent()
+    pdfjsLib.GlobalWorkerOptions.cMapUrl = new URL('libs/cmaps_full/', document.baseURI).href;
     pdfjsLib.GlobalWorkerOptions.cMapPacked = true;
   }
 }
@@ -1930,9 +1930,11 @@ function cn2num(s) {
 
 // 从试卷文本中识别大题分段（返回 [{type, startIdx, endIdx}]）
 function parseExamSections(text) {
-  // 大题标题：行首 [中文数字/阿拉伯数字] 、或 . 或 ． 后跟题型关键词
+  // 大题标题行：行首为序号（中文数字/阿拉伯数字/罗马数字）+ 分隔符
   // 形如："一、选择题" "二.填空题" "3．解答题" "（二）实验探究题" "Ⅱ.选择题"
-  const secRe = /^[ \t]*[（(]?\s*([一二三四五六七八九十ⅡⅠⅢIVX]{1,4}|\d{1,2})\s*[)、.．）)]?\s*([^\n]{0,20})$/gm;
+  // 不再要求整行只含标题，允许后接分值说明（如"（每小题3分，共30分）"）
+  // ★ 用 [ \t]* 而非 \s*，避免 \s 贪婪吞掉空行换行符导致跨行错配
+  const secRe = /^[ \t]*[（(]?[ \t]*([一二三四五六七八九十ⅡⅠⅢIVX]{1,4}|\d{1,2})[ \t]*[)、.．）)]?/gm;
   // ★ 答案区起点：含"参考答案""答案及解析"等 → 答案区不算题目，要截断
   let ansStart = text.length;
   const ansRe = /(?:参考答案及解析|参考答案|试题答案|答案及解析|答案[:：])/g;
@@ -1944,15 +1946,22 @@ function parseExamSections(text) {
   let m;
   while ((m = secRe.exec(text)) !== null) {
     if (m.index >= ansStart) continue; // 答案区里的大题标题不算
-    const label = (m[2] || '').trim();
-    if (!label) continue;
-    // 匹配题型
+    // 取本行序号之后的剩余内容（从匹配前缀之后开始查找行尾，更稳健）
+    const after = m.index + m[0].length;
+    const lineEnd = text.indexOf('\n', after);
+    const lineRest = text.substring(after, lineEnd === -1 ? text.length : lineEnd);
+    // 去掉行首空白/左括号/可选的"第X卷"前缀，使题型关键词落在行首
+    const stripped = lineRest.replace(/^[\s（(]*(?:第[一二三四五六七八九十\dⅠⅡⅢIVX]+卷[、.．\s]*)?/, '').trim();
+    if (!stripped) continue;
+    // 题型关键词须出现在标题行首附近（题型标题特征），避免把题目正文里的"选择题"误判
     let qtype = null;
+    let label = '';
     for (const t of EXAM_QTYPE_MAP) {
-      if (t.kw.test(label)) { qtype = t.type; break; }
+      const km = stripped.match(t.kw);
+      if (km && km.index === 0) { qtype = t.type; label = lineRest.trim(); break; }
     }
     if (!qtype) continue; // 不是题型大题，跳过（如"一、积累与运用"）
-    sections.push({ type: qtype, startIdx: m.index, label, lineEnd: text.indexOf('\n', m.index) });
+    sections.push({ type: qtype, startIdx: m.index, label, lineEnd: lineEnd === -1 ? text.length : lineEnd });
   }
   // 计算每个大题的结束位置 = 下一个大题起点 / 答案区起点 / 文末
   for (let i = 0; i < sections.length; i++) {
@@ -2080,6 +2089,9 @@ async function handleExamPdfUpload(file) {
       }
       _examUploadData.pageTexts = pageTexts;
       _examUploadData.fullText = fullText;
+      // ★ 诊断：统计实际提取到的非空白文字量
+      const textLen = fullText.replace(/\s/g, '').length;
+      console.log('[真题] PDF 提取文字长度(去空白):', textLen, '页数:', pdf.numPages);
       // 提取元信息
       const meta = detectExamMeta(file.name, pageTexts[0] || '');
       // 解析大题 → 小题
@@ -2114,7 +2126,14 @@ async function handleExamPdfUpload(file) {
       renderExamQuestions();
       // 存 PDF 原文到 IndexedDB（复用教材的存储）
       if (arrayBuffer) savePdfToDB(paperId, arrayBuffer, file.name).catch(err => console.warn('真题PDF保存失败', err));
-      showToast(`解析完成：识别 ${sections.length} 大题 / ${allQuestions.length} 道小题`);
+      // ★ 结果提示：区分“无文字(扫描件)”“有文字但未识别题目”“正常”
+      if (allQuestions.length > 0) {
+        showToast(`解析完成：识别 ${sections.length} 大题 / ${allQuestions.length} 道小题`, 3000);
+      } else if (textLen < 20) {
+        showToast('未提取到试卷文字！该 PDF 疑似扫描件/图片型，无文本层，无法自动提取题目。请上传“可选中文字”的 PDF（文字版真题）。', 8000);
+      } else {
+        showToast('已读取试卷文字，但未能识别题目结构（' + textLen + ' 字）。请确认 PDF 为标准中考真题排版，含“一、选择题”等大题标题。', 8000);
+      }
     } catch (err) {
       console.error('真题解析失败:', err);
       showToast('真题解析失败：' + (err.message || '未知错误'));
@@ -4861,12 +4880,12 @@ function navigate(page) {
 }
 
 // ============ 工具函数 ============
-function showToast(msg) {
+function showToast(msg, duration) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(window._toastTimer);
-  window._toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+  window._toastTimer = setTimeout(() => t.classList.remove('show'), duration || 2200);
 }
 
 function formatTime(ts) {
