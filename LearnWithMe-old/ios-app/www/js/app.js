@@ -1121,10 +1121,15 @@ function renderBookReader(units, ti, point) {
 
   // ★ 单页渲染模式：初始渲染目标课文的第一页 + 绑定手势
   if (textbook && textbook.hasPdf && allLessons.length > 0) {
-    const l = allLessons[flatIdx];
     setTimeout(() => {
       const bodyEl = document.getElementById(`tb-content-body-${ti}`);
-      if (!bodyEl || !l.startPage) return;
+      if (!bodyEl) return;
+      // ★ 读取最新的选中索引（viewTextbookAndSelect 已通过 selectBookLesson 设置目标），
+      //   避免 setTimeout 用旧 flatIdx 覆盖掉书签跳转的结果
+      const sel = window._tbSelection && window._tbSelection[ti];
+      const targetIdx = (sel && typeof sel.flatIdx === 'number') ? sel.flatIdx : flatIdx;
+      const l = allLessons[targetIdx];
+      if (!l || !l.startPage) return;
       const offset = textbook.pageOffset || 0;
       const sp = l.startPage + offset;
       const ep = (l.endPage || l.startPage) + offset;
@@ -1170,6 +1175,8 @@ function selectBookLesson(ti, fIdx) {
       window._tbCurrentPage = window._tbCurrentPage || {};
       window._tbCurrentPage[ti] = { page: sp, total: null, textbookId, startPage: sp, endPage: ep };
       renderPdfPage(textbookId, sp, bodyEl, l.title, sp, ep);
+      // ★ 确保手势已绑定（从任意入口进入都能翻页）
+      bindSwipeGesture(ti, bodyEl);
     }
   }
 }

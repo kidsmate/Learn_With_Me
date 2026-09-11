@@ -1938,16 +1938,6 @@ html, body {
   font-weight: 600;
 }
 
-.pdf-canvas {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin: 0 auto;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-}
-
 .btn-sm {
   padding: 6px 14px;
   font-size: 13px;
