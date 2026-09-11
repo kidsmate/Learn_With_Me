@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>OCR Test</title>
+<script src="libs/ocr/tesseract.min.js"></script>
+</head>
+<body>
+<canvas id="cv" width="900" height="700" style="border:1px solid #ccc"></canvas>
+<pre id="log" style="white-space:pre-wrap;background:#f4f4f4;padding:8px"></pre>
+<button id="btn">开始 OCR</button>
+<script>
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+window.addEventListener('DOMContentLoaded', () => {
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = 'white'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle = 'black';
+  ctx.font = '28px sans-serif';
+  const lines = [
+    '2023年某市中考数学试卷',
+    '一、选择题（每小题3分，共30分）',
+    '1. 下列各数中是无理数的是',
+    'A. 3.14   B. 二分之一   C. 根号二   D. 0',
+    '2. 下列运算正确的是',
+    'A. a加a平方   B. 括号a平方的立方',
+    '二、填空题（每空2分，共10分）',
+    '7. 若x等于2是方程的解，则m等于',
+    '8. 多边形内角和是720度，则它是几边形',
+    '参考答案',
+    '1. C   2. D   7. 4   8. 六',
+  ];
+  let y = 50;
+  lines.forEach(l => { ctx.fillText(l, 40, y); y += 42; });
+  log('Tesseract loaded: ' + (typeof Tesseract));
+
+  document.getElementById('btn').addEventListener('click', async () => {
+    try {
+      log('creating worker (chi_sim)...');
+      const worker = await Tesseract.createWorker('chi_sim', 1, {
+        workerPath: new URL('libs/ocr/worker.min.js', document.baseURI).href,
+        logger: m => log('  [' + m.status + '] ' + (m.progress != null ? Math.round(m.progress*100)+'%' : ''))
+      });
+      log('recognizing...');
+      const { data } = await worker.recognize(cv);
+      log('=== RECOGNIZED TEXT ===');
+      log(data.text);
+      await worker.terminate();
+    } catch (e) {
+      log('ERROR: ' + (e.stack || e.message || e));
+    }
+  });
+});
+</script>
+</body>
+</html>

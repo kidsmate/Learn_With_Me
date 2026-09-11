@@ -1068,6 +1068,64 @@ html, body {
   color: var(--text-light);
 }
 
+/* ===== 试卷式排版（按题型分组） ===== */
+.exam-paper-section {
+  background: var(--card);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+}
+.exam-paper-section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--primary);
+  padding-bottom: 8px;
+  margin-bottom: 10px;
+  border-bottom: 2px solid var(--primary);
+}
+.exam-paper-section-count {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-light);
+}
+.exam-paper-q {
+  padding: 8px 0 10px;
+  border-bottom: 1px dashed var(--border);
+}
+.exam-paper-q:last-child {
+  border-bottom: none;
+}
+.exam-paper-q-stem {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.exam-paper-options {
+  margin: 6px 0 6px 14px;
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-light);
+}
+.exam-paper-options span {
+  display: inline-block;
+  margin-right: 18px;
+}
+.exam-paper-answer {
+  margin-left: 14px;
+  font-size: 13px;
+  color: var(--accent);
+}
+.exam-paper-answer.empty {
+  color: var(--text-light);
+}
+.exam-paper-q-src {
+  margin-left: 14px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-light);
+}
+
 /* ===== Settings ===== */
 .settings-list {
   display: flex;

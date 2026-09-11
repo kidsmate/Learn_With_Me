@@ -1906,6 +1906,7 @@ const EXAM_QTYPE_MAP = [
   { kw: /单项选择|选择题|单选|多项选择|多选/, type: '选择题' },
   { kw: /填空/, type: '填空题' },
   { kw: /判断/, type: '判断题' },
+  { kw: /简答/, type: '简答题' },
   { kw: /作图|画图/, type: '作图题' },
   { kw: /实验|探究/, type: '实验探究题' },
   { kw: /计算|解答/, type: '解答题' },
@@ -1928,40 +1929,54 @@ function cn2num(s) {
   return map[s[0]] || null;
 }
 
-// 从试卷文本中识别大题分段（返回 [{type, startIdx, endIdx}]）
+// 题型关键词正则片段（用于无序号标题、OCR 粘连拆分等场景，与 EXAM_QTYPE_MAP 保持一致）
+const EXAM_SEC_KEYWORDS = '单项选择|多项选择|选择题|单选|多选|填空题|填空|判断题|判断|简答题|简答|作图题|作图|画图|实验探究题|实验探究|实验|探究|计算题|计算|解答题|解答|证明题|证明|阅读理解题|文言文阅读|现代文阅读|诗词鉴赏|诗歌鉴赏|综合性学习|作文题|作文|写作|附加题|选作题|综合应用题|综合题';
+// 由关键词片段命中判定题型名（取 EXAM_QTYPE_MAP 第一个匹配项）
+function matchQtypeByKw(kw) {
+  if (!kw) return null;
+  for (const t of EXAM_QTYPE_MAP) { if (t.kw.test(kw)) return t.type; }
+  return null;
+}
+// 从试卷文本中识别大题分段（返回 [{type, startIdx, endIdx, label}]）
+// 思路：去 PDF/OCR 文本里"找填空题、选择题、判断题、简答题这样的字眼"，
+// 把该字眼所在行作为大题标题，其下到下一个大题标题/答案区之间的内容都归为该大题题目。
 function parseExamSections(text) {
-  // 大题标题行：行首为序号（中文数字/阿拉伯数字/罗马数字）+ 分隔符
-  // 形如："一、选择题" "二.填空题" "3．解答题" "（二）实验探究题" "Ⅱ.选择题"
-  // 不再要求整行只含标题，允许后接分值说明（如"（每小题3分，共30分）"）
-  // ★ 用 [ \t]* 而非 \s*，避免 \s 贪婪吞掉空行换行符导致跨行错配
-  const secRe = /^[ \t]*[（(]?[ \t]*([一二三四五六七八九十ⅡⅠⅢIVX]{1,4}|\d{1,2})[ \t]*[)、.．）)]?/gm;
-  // ★ 答案区起点：含"参考答案""答案及解析"等 → 答案区不算题目，要截断
+  // 答案区起点：含"参考答案""答案及解析"等 → 答案区不算题目，要截断
   let ansStart = text.length;
   const ansRe = /(?:参考答案及解析|参考答案|试题答案|答案及解析|答案[:：])/g;
   let am;
   while ((am = ansRe.exec(text)) !== null) {
     if (am.index < ansStart) ansStart = am.index;
   }
+  // 标题行特征：行内含分值/小题数说明（用于无序号标题的判别，避免题干误判）
+  const isHeaderLikeLine = (s) => s.length <= 14 || /每[小题空]?\s*\d+\s*分|共\s*\d+\s*分|本[大题]题|分[,，）)]|小题|满分|合计|共计/.test(s);
+  const secKwRe = new RegExp(EXAM_SEC_KEYWORDS);
   const sections = [];
-  let m;
-  while ((m = secRe.exec(text)) !== null) {
-    if (m.index >= ansStart) continue; // 答案区里的大题标题不算
-    // 取本行序号之后的剩余内容（从匹配前缀之后开始查找行尾，更稳健）
-    const after = m.index + m[0].length;
-    const lineEnd = text.indexOf('\n', after);
-    const lineRest = text.substring(after, lineEnd === -1 ? text.length : lineEnd);
-    // 去掉行首空白/左括号/可选的"第X卷"前缀，使题型关键词落在行首
-    const stripped = lineRest.replace(/^[\s（(]*(?:第[一二三四五六七八九十\dⅠⅡⅢIVX]+卷[、.．\s]*)?/, '').trim();
-    if (!stripped) continue;
-    // 题型关键词须出现在标题行首附近（题型标题特征），避免把题目正文里的"选择题"误判
+  const lines = text.split('\n');
+  let cursor = 0; // 当前行在全文中的起始下标
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
+    const lineStart = cursor;
+    cursor += line.length + 1; // +1 为换行符
+    if (lineStart >= ansStart) continue; // 答案区内的不算
+    const trimmed = line.replace(/^[ \t　]+/, '').trim();
+    if (!trimmed) continue;
     let qtype = null;
-    let label = '';
-    for (const t of EXAM_QTYPE_MAP) {
-      const km = stripped.match(t.kw);
-      if (km && km.index === 0) { qtype = t.type; label = lineRest.trim(); break; }
+    // 模式A：序号 + 可选分隔符 + 题型关键词
+    // 兼容："一、选择题" "二.填空题" "3．解答题" "（二）实验探究题" "Ⅱ.选择题" 以及 OCR 丢分隔符的"一选择题"
+    let mA = trimmed.match(new RegExp('^[（(]?\\s*([一二三四五六七八九十ⅡⅠⅢIVX]{1,4}|\\d{1,2})\\s*[）、.．）)]?\\s*(' + EXAM_SEC_KEYWORDS + ')'));
+    if (mA) {
+      qtype = matchQtypeByKw(mA[2]);
+    } else {
+      // 模式B：行首直接是题型关键词（无序号标题，如"选择题（每小题3分）"）
+      // 仅当该行像标题（较短或含分值/小题说明）才认，避免把题干里的"选择题"误判
+      const mB = trimmed.match(new RegExp('^(' + EXAM_SEC_KEYWORDS + ')'));
+      if (mB && isHeaderLikeLine(trimmed)) {
+        qtype = matchQtypeByKw(mB[1]);
+      }
     }
-    if (!qtype) continue; // 不是题型大题，跳过（如"一、积累与运用"）
-    sections.push({ type: qtype, startIdx: m.index, label, lineEnd: lineEnd === -1 ? text.length : lineEnd });
+    if (!qtype) continue;
+    sections.push({ type: qtype, startIdx: lineStart, label: trimmed });
   }
   // 计算每个大题的结束位置 = 下一个大题起点 / 答案区起点 / 文末
   for (let i = 0; i < sections.length; i++) {
@@ -1969,14 +1984,22 @@ function parseExamSections(text) {
     if (end > ansStart) end = ansStart; // 不越过答案区
     sections[i].endIdx = end;
   }
+  // 兜底：全文一个题型标题都没识别到，但文本里能扫到题型关键词 → 把关键词首次出现处之后整体当作一个大题
+  if (sections.length === 0) {
+    const km = secKwRe.exec(text);
+    if (km && km.index < ansStart) {
+      const qt = matchQtypeByKw(km[0]);
+      if (qt) sections.push({ type: qt, startIdx: km.index, endIdx: ansStart, label: km[0] });
+    }
+  }
   return sections;
 }
 
 // 在一段大题文本内切分小题，返回 [{num, stem, options}]
 function parseQuestionsInSection(sectionText, qtype) {
-  // 小题号：行首 数字 + . 、 ． 或 （数字）
-  // 如 "1. xxx" "2、xxx" "3．xxx" "(4) xxx" "（5）xxx"
-  const qStartRe = /^[ \t]*[（(]?(\d{1,3})[)、.．）]?/gm;
+  // 小题号：行首 可选括号 + 数字 + 可选分隔符（. 、 ． ) ） 空格）
+  // 兼容："1. xxx" "2、xxx" "3．xxx" "(4) xxx" "（5）xxx" "1) xxx" 以及 OCR 丢分隔符的"1 xxx"
+  const qStartRe = /^[ \t　]*[（(]?(\d{1,3})[)）、.．）\s]?/gm;
   const positions = [];
   let m;
   while ((m = qStartRe.exec(sectionText)) !== null) {
@@ -1985,31 +2008,55 @@ function parseQuestionsInSection(sectionText, qtype) {
     if (/^\d/.test(after) && !/^[（(]/.test(m[0])) continue; // 如 "2023年" 排除
     positions.push({ num: parseInt(m[1]), start: m.index });
   }
+  // 去重（同一起点只保留一次）
+  const seen = new Set();
+  const uniq = positions.filter(p => { if (seen.has(p.start)) return false; seen.add(p.start); return true; });
+  const isChoice = (qtype === '选择题');
   const questions = [];
-  for (let i = 0; i < positions.length; i++) {
-    const start = positions[i].start;
-    const end = (i + 1 < positions.length) ? positions[i + 1].start : sectionText.length;
-    let body = sectionText.substring(start, end).trim();
-    if (body.length < 4) continue; // 太短不像题
-    // 去掉题号前缀，保留题干
-    body = body.replace(/^\s*[（(]?\d{1,3}[)、.．）]?\s*/, '');
-    // 提取选项（选择题特有）：A. / A、/ A． / (A)
-    const options = {};
-    if (qtype === '选择题') {
-      const optRe = /[（(]?\s*([A-Da-d])[）、.．）)]?\s*([^\n]{1,120}?)(?=[（(]?\s*[A-Da-d][）、.．）)]|$)/g;
-      let om;
-      while ((om = optRe.exec(body)) !== null) {
-        const k = om[1].toUpperCase();
-        const v = om[2].trim();
-        if (v && !options[k]) options[k] = v;
+  if (uniq.length > 0) {
+    for (let i = 0; i < uniq.length; i++) {
+      const start = uniq[i].start;
+      const end = (i + 1 < uniq.length) ? uniq[i + 1].start : sectionText.length;
+      let body = sectionText.substring(start, end).trim();
+      if (body.length < 4) continue; // 太短不像题
+      // 去掉题号前缀，保留题干
+      body = body.replace(/^\s*[（(]?\d{1,3}[)）、.．）\s]?\s*/, '');
+      // 提取选项（选择题特有）：A. / A、/ A． / (A)
+      const options = {};
+      if (isChoice) {
+        const optRe = /[（(]?\s*([A-Da-d])[）、.．）)]?\s*([^\n]{1,120}?)(?=[（(]?\s*[A-Da-d][）、.．）)]|$)/g;
+        let om;
+        while ((om = optRe.exec(body)) !== null) {
+          const k = om[1].toUpperCase();
+          const v = om[2].trim();
+          if (v && !options[k]) options[k] = v;
+        }
+        // 清理题干中的选项部分：取第一处 A. 之前的内容作题干
+        const aIdx = body.search(/[（(]?A[）、.．）)]/);
+        if (aIdx > 0) body = body.substring(0, aIdx).trim();
       }
-      // 清理题干中的选项部分：取第一处 A. 之前的内容作题干
-      const aIdx = body.search(/[（(]?A[）、.．）)]/);
-      if (aIdx > 0) body = body.substring(0, aIdx).trim();
+      // 截断过长的题干
+      if (body.length > 500) body = body.substring(0, 500) + '…';
+      questions.push({ num: uniq[i].num, stem: body, options: isChoice ? options : null });
     }
-    // 截断过长的题干
-    if (body.length > 500) body = body.substring(0, 500) + '…';
-    questions.push({ num: positions[i].num, stem: body, options: qtype === '选择题' ? options : null });
+  }
+  // 兜底：题号一个都没切到，且为无选项题型 → 按行切分，把"字眼下面的内容"都当成题目列出
+  // 适用于 OCR 把题号全丢了的扫描件
+  const noOptTypes = ['填空题','简答题','解答题','证明题','阅读理解题','作文题','实验探究题','综合题','附加题','作图题','判断题'];
+  if (questions.length === 0 && noOptTypes.indexOf(qtype) >= 0) {
+    const lines = sectionText.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i].replace(/^[ \t　]+/, '').trim();
+      if (!raw) continue;
+      // 跳过首行大题标题（含题型关键词且较短）
+      if (i === 0 && new RegExp(EXAM_SEC_KEYWORDS).test(raw) && raw.length <= 16) continue;
+      // 跳过答案/分值说明行
+      if (/参考答案|答案[:：]|每[小题空]?\s*\d+\s*分|共\s*\d+\s*分/.test(raw)) continue;
+      let stem = raw.replace(/^\s*[（(]?\d{1,3}[)）、.．）\s]?\s*/, '');
+      if (stem.length < 3) continue;
+      if (stem.length > 500) stem = stem.substring(0, 500) + '…';
+      questions.push({ num: questions.length + 1, stem, options: null });
+    }
   }
   return questions;
 }
@@ -2021,11 +2068,61 @@ function extractAnswers(text, questions, qtype) {
   const am = text.match(ansStartRe);
   if (!am) return; // 无答案区
   const ansText = am[0];
+  // 在答案区内按题型小标题分段（如"一、选择题"/"判断题"），避免跨题型串号
+  const segTitleRe = new RegExp('^\\s*(?:[一二三四五六七八九十ⅡⅠⅢIVX]{1,4}|\\d{1,2})?[、.．）)]?\\s*(' + EXAM_SEC_KEYWORDS + ')');
+  const lines = ansText.split('\n');
+  let cursor = 0;
+  const segs = []; // {type, start, end}
+  let curType = null, curStart = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineStart = cursor;
+    cursor += line.length + 1;
+    const m = line.match(segTitleRe);
+    if (m) {
+      const t = matchQtypeByKw(m[1]);
+      if (t) {
+        if (curType) segs.push({ type: curType, start: curStart, end: lineStart });
+        curType = t; curStart = lineStart;
+      }
+    }
+  }
+  if (curType) segs.push({ type: curType, start: curStart, end: ansText.length });
+  // 取本题型对应的答案段；未识别到小标题时退回整段
+  const segFor = (t) => {
+    const s = segs.find(s => s.type === t);
+    return s ? ansText.substring(s.start, s.end) : ansText;
+  };
+  const isChoice = (qtype === '选择题');
+  const isJudge = (qtype === '判断题');
+  const segText = segFor(qtype);
   questions.forEach(q => {
-    // 在答案区找 "1. A" "1、B" "(1) C" "1．D" 等
-    const re = new RegExp('(?:^|[^\\d])' + q.num + '[、.．）)]\\s*[（(]?\\s*([A-Da-d])\\b', 'm');
-    const mm = ansText.match(re);
-    if (mm) q.answer = mm[1].toUpperCase();
+    if (q.answer) return;
+    if (isChoice) {
+      // 选择题："1. A" "1、B" "(1) C" "1．D"
+      const re = new RegExp('(?:^|[^\\d])' + q.num + '[、.．）)]\\s*[（(]?\\s*([A-Da-d])\\b', 'm');
+      const mm = segText.match(re);
+      if (mm) q.answer = mm[1].toUpperCase();
+    } else if (isJudge) {
+      // 判断题："1. √" "1、×" "1. 对" "1. 正确" "1. 错误" "1. T/F"
+      const re = new RegExp('(?:^|[^\\d])' + q.num + '[、.．）)]\\s*[（(]?\\s*([√×对错正TF])', 'm');
+      const mm = segText.match(re);
+      if (mm) {
+        const a = mm[1];
+        if (/[√对正TA]/.test(a)) q.answer = '正确';
+        else if (/[×错F]/.test(a)) q.answer = '错误';
+      }
+    } else {
+      // 填空/简答等：取题号后到行尾/下一题号前的文字作答案
+      const re = new RegExp('(?:^|[^\\d])' + q.num + '[、.．）)]\\s*([^\\n]{1,80})', 'm');
+      const mm = segText.match(re);
+      if (mm) {
+        let a = mm[1].trim();
+        // 截到疑似下一题号处
+        a = a.replace(/\s*\d{1,3}[、.．）)].*$/, '').trim();
+        if (a) q.answer = a;
+      }
+    }
   });
 }
 
@@ -2047,6 +2144,79 @@ function detectExamMeta(name, firstPageText) {
   const rm = text.match(/(?:^|[^年卷])([\u4e00-\u9fa5]{2,6}(?:市|自治区|地区|州|县))/);
   if (rm) region = rm[1].replace(/^年|^卷/, '');
   return { subject, year, region };
+}
+
+// ---- OCR 模块（扫描件文字识别）----
+let _ocrWorker = null;
+function loadScriptOnce(src) {
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = src; s.async = true;
+    s.onload = () => res();
+    s.onerror = () => rej(new Error('脚本加载失败: ' + src));
+    document.head.appendChild(s);
+  });
+}
+// 准备 OCR worker（中文识别）。按需加载 tesseract.js，不阻塞首屏。
+// worker 本地化；core/lang 走默认 CDN，首次联网下载后浏览器缓存可离线复用。
+async function ensureOcrReady(onLog) {
+  if (_ocrWorker) return _ocrWorker;
+  if (!window.Tesseract) {
+    await loadScriptOnce(new URL('libs/ocr/tesseract.min.js', document.baseURI).href);
+  }
+  if (!window.Tesseract) throw new Error('OCR 引擎加载失败');
+  _ocrWorker = await Tesseract.createWorker('chi_sim', 1, {
+    workerPath: new URL('libs/ocr/worker.min.js', document.baseURI).href,
+    logger: m => { if (onLog && m && m.status) onLog(m); }
+  });
+  return _ocrWorker;
+}
+// OCR 文本规范化：去 CJK 字间空格、修正标点、规范选项前缀，使其适配题目解析正则
+function normalizeOcrText(text) {
+  let t = (text || '')
+    // 修正常见 OCR 标点错误：《》【】→（）
+    .replace(/《/g, '（').replace(/》/g, '）')
+    .replace(/【/g, '（').replace(/】/g, '）')
+    // OCR 常见误识修正：答案区关键词，保证"参考答案"被识别以截断答案区
+    .replace(/参考\s*代\s*案/g, '参考答案')
+    .replace(/参考\s*答\s*察/g, '参考答案')
+    .replace(/参考\s*答\s*策/g, '参考答案')
+    .replace(/参考\s*答\s*案/g, '参考答案');
+  // 循环去除 CJK/中文标点之间的空格（OCR 常在每字间插入空格）
+  let prev;
+  do {
+    prev = t;
+    t = t.replace(/([\u4e00-\u9fa5，。、；：！？（）])\s+([\u4e00-\u9fa5，。、；：！？（）])/g, '$1$2');
+  } while (t !== prev);
+  // 把粘连到上一行末的大题标题拆到行首（OCR 常把"...试卷一、选择题"识别成一行，导致行首正则失配）
+  var secKw = '(?:单项选择|多项选择|选择题|单选|多选|填空题|填空|判断题|判断|作图题|作图|画图|实验探究题|实验|探究|计算题|计算|解答题|解答|证明题|证明|阅读理解题|文言文阅读|现代文阅读|诗词鉴赏|诗歌鉴赏|综合性学习|作文题|作文|写作|附加题|选作题|综合应用题|综合题)';
+  t = t.replace(new RegExp('([^\\n])([一二三四五六七八九十ⅡⅠⅢIVX]{1,4}[、.．]\\s*' + secKw + ')', 'g'), '$1\n$2');
+  // 选项前缀规范化：A.3.14 → A. 3.14；A 、xxx → A. xxx
+  t = t.replace(/([A-Da-d])\s*[.、．]\s*/g, '$1. ');
+  t = t.replace(/\n{3,}/g, '\n\n');
+  return t;
+}
+// 对扫描件 PDF 逐页 OCR，返回全文（scale=2 提升分辨率改善精度）
+async function ocrPdfPages(arrayBuffer, onProgress) {
+  const u8 = new Uint8Array(arrayBuffer);
+  const pdf = await pdfjsLib.getDocument({ data: u8, disableWorker: true }).promise;
+  const worker = await ensureOcrReady();
+  let fullText = '';
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const result = await worker.recognize(canvas);
+    fullText += (result && result.data && result.data.text ? result.data.text : '') + '\n\n';
+    if (onProgress) onProgress(i, pdf.numPages);
+  }
+  return fullText;
 }
 
 // ---- 上传处理 ----
@@ -2092,8 +2262,26 @@ async function handleExamPdfUpload(file) {
       // ★ 诊断：统计实际提取到的非空白文字量
       const textLen = fullText.replace(/\s/g, '').length;
       console.log('[真题] PDF 提取文字长度(去空白):', textLen, '页数:', pdf.numPages);
-      // 提取元信息
-      const meta = detectExamMeta(file.name, pageTexts[0] || '');
+      // ★ 扫描件（无文本层）：走 OCR 识别文字，再复用题目解析逻辑
+      let ocrUsed = false;
+      if (textLen < 20) {
+        showToast('检测到扫描件，正在 OCR 识别文字（每页约数秒，首次需下载中文模型）…', 3000);
+        try {
+          fullText = await ocrPdfPages(arrayBuffer.slice(0), (i, n) => {
+            showToast(`正在 OCR 第 ${i}/${n} 页…`, 1500);
+          });
+          fullText = normalizeOcrText(fullText);
+          ocrUsed = true;
+          _examUploadData.fullText = fullText;
+          console.log('[真题] OCR 后文字长度(去空白):', fullText.replace(/\s/g, '').length);
+        } catch (err) {
+          console.error('OCR 失败:', err);
+          showToast('OCR 识别失败：' + (err.message || err) + '。请确认网络可用（首次需联网下载识别模型）。', 6000);
+          return;
+        }
+      }
+      // 提取元信息（扫描件 OCR 后用全文开头补充识别学科/年份/地区）
+      const meta = detectExamMeta(file.name, pageTexts[0] || fullText.substring(0, 300));
       // 解析大题 → 小题
       const sections = parseExamSections(fullText);
       const allQuestions = [];
@@ -2126,11 +2314,12 @@ async function handleExamPdfUpload(file) {
       renderExamQuestions();
       // 存 PDF 原文到 IndexedDB（复用教材的存储）
       if (arrayBuffer) savePdfToDB(paperId, arrayBuffer, file.name).catch(err => console.warn('真题PDF保存失败', err));
-      // ★ 结果提示：区分“无文字(扫描件)”“有文字但未识别题目”“正常”
+      // ★ 结果提示：区分“扫描件已OCR”“有文字但未识别题目”“正常”
       if (allQuestions.length > 0) {
-        showToast(`解析完成：识别 ${sections.length} 大题 / ${allQuestions.length} 道小题`, 3000);
-      } else if (textLen < 20) {
-        showToast('未提取到试卷文字！该 PDF 疑似扫描件/图片型，无文本层，无法自动提取题目。请上传“可选中文字”的 PDF（文字版真题）。', 8000);
+        const prefix = ocrUsed ? 'OCR 识别完成：' : '解析完成：';
+        showToast(prefix + `识别 ${sections.length} 大题 / ${allQuestions.length} 道小题`, 3500);
+      } else if (ocrUsed) {
+        showToast('OCR 已识别试卷文字，但未能识别题目结构。请确认 PDF 为标准中考真题排版，含“一、选择题”等大题标题。', 8000);
       } else {
         showToast('已读取试卷文字，但未能识别题目结构（' + textLen + ' 字）。请确认 PDF 为标准中考真题排版，含“一、选择题”等大题标题。', 8000);
       }
@@ -2195,18 +2384,32 @@ function renderExamQuestions() {
     list.innerHTML = '<div class="empty-state"><div class="empty-icon">🗂️</div>题库为空，上传真题卷后会自动提取题目到此处</div>';
     return;
   }
-  list.innerHTML = qs.map((q, i) => `
-    <div class="exam-question-item">
-      <div class="exam-q-head">
-        <span class="exam-q-type">${escapeHtml(q.type || '未分类')}</span>
-        <span class="exam-q-source">${escapeHtml(q.subject || '')} ${q.year ? q.year + '年' : ''} ${q.region ? escapeHtml(q.region) : ''}</span>
-        <span class="exam-q-paper" title="${escapeHtml(q.paperName)}">📄 ${escapeHtml(q.paperName)}</span>
-      </div>
-      <div class="exam-q-stem">${i + 1}. ${escapeHtml(q.stem)}</div>
-      ${q.options ? `<div class="exam-q-options">${q.options.map(o => `<div>${escapeHtml(o)}</div>`).join('')}</div>` : ''}
-      ${q.answer ? `<div class="exam-q-answer">参考答案：<b>${escapeHtml(q.answer)}</b></div>` : '<div class="exam-q-answer empty">暂无参考答案</div>'}
-    </div>
-  `).join('');
+  // 按题型分组，按试卷格式排版（大题标题 + 题目列表）
+  const typeOrder = [];
+  const groups = {};
+  qs.forEach(q => {
+    const t = q.type || '未分类';
+    if (!groups[t]) { groups[t] = []; typeOrder.push(t); }
+    groups[t].push(q);
+  });
+  const cnNum = ['一','二','三','四','五','六','七','八','九','十','十一','十二','十三','十四','十五'];
+  list.innerHTML = typeOrder.map((t, gi) => {
+    const list = groups[t];
+    const title = (cnNum[gi] || (gi + 1)) + '、' + escapeHtml(t);
+    const qHtml = list.map((q, i) => {
+      const src = [q.subject, q.year ? q.year + '年' : '', q.region].filter(Boolean).map(escapeHtml).join(' · ');
+      return `<div class="exam-paper-q">
+        <div class="exam-paper-q-stem">${i + 1}. ${escapeHtml(q.stem)}</div>
+        ${q.options && q.options.length ? `<div class="exam-paper-options">${q.options.map(o => `<span>${escapeHtml(o)}</span>`).join('')}</div>` : ''}
+        ${q.answer ? `<div class="exam-paper-answer">参考答案：<b>${escapeHtml(q.answer)}</b></div>` : '<div class="exam-paper-answer empty">暂无参考答案</div>'}
+        ${src ? `<div class="exam-paper-q-src">${src} · 📄 ${escapeHtml(q.paperName || '')}</div>` : ''}
+      </div>`;
+    }).join('');
+    return `<div class="exam-paper-section">
+      <div class="exam-paper-section-title">${title} <span class="exam-paper-section-count">（共 ${list.length} 题）</span></div>
+      ${qHtml}
+    </div>`;
+  }).join('');
 }
 
 // ---- 删除试卷（连带题目）----

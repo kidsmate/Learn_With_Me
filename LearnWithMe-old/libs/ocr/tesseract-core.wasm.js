@@ -1,0 +1,1 @@
+Couldn't find the requested file /dist/tesseract-core.wasm.js in tesseract.js-core.
