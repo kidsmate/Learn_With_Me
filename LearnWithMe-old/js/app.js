@@ -2012,6 +2012,8 @@ function parseQuestionsInSection(sectionText, qtype) {
   const seen = new Set();
   const uniq = positions.filter(p => { if (seen.has(p.start)) return false; seen.add(p.start); return true; });
   const isChoice = (qtype === '选择题');
+  // 说明性文字（考试介绍/答题须知）特征：题干开头命中这些词 → 不是题，跳过
+  const explRe = /^(注意事项|考生须知|考试须知|答题前|本试卷|试卷共|本大题共|满分|姓名|考号|准考证号|装订线|密封线|分钟|考试时间|座位号|班级|学校|请将|请勿|请在|得分|评卷人|评卷|阅卷|命题|审核|校对|出题)/;
   const questions = [];
   if (uniq.length > 0) {
     for (let i = 0; i < uniq.length; i++) {
@@ -2021,6 +2023,8 @@ function parseQuestionsInSection(sectionText, qtype) {
       if (body.length < 4) continue; // 太短不像题
       // 去掉题号前缀，保留题干
       body = body.replace(/^\s*[（(]?\d{1,3}[)）、.．）\s]?\s*/, '');
+      // 跳过考试介绍/答题须知等说明性文字（有题号但内容是说明）
+      if (explRe.test(body)) continue;
       // 提取选项（选择题特有）：A. / A、/ A． / (A)
       const options = {};
       if (isChoice) {
@@ -2040,24 +2044,8 @@ function parseQuestionsInSection(sectionText, qtype) {
       questions.push({ num: uniq[i].num, stem: body, options: isChoice ? options : null });
     }
   }
-  // 兜底：题号一个都没切到，且为无选项题型 → 按行切分，把"字眼下面的内容"都当成题目列出
-  // 适用于 OCR 把题号全丢了的扫描件
-  const noOptTypes = ['填空题','简答题','解答题','证明题','阅读理解题','作文题','实验探究题','综合题','附加题','作图题','判断题'];
-  if (questions.length === 0 && noOptTypes.indexOf(qtype) >= 0) {
-    const lines = sectionText.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const raw = lines[i].replace(/^[ \t　]+/, '').trim();
-      if (!raw) continue;
-      // 跳过首行大题标题（含题型关键词且较短）
-      if (i === 0 && new RegExp(EXAM_SEC_KEYWORDS).test(raw) && raw.length <= 16) continue;
-      // 跳过答案/分值说明行
-      if (/参考答案|答案[:：]|每[小题空]?\s*\d+\s*分|共\s*\d+\s*分/.test(raw)) continue;
-      let stem = raw.replace(/^\s*[（(]?\d{1,3}[)）、.．）\s]?\s*/, '');
-      if (stem.length < 3) continue;
-      if (stem.length > 500) stem = stem.substring(0, 500) + '…';
-      questions.push({ num: questions.length + 1, stem, options: null });
-    }
-  }
+  // 不再做"按行兜底切分"——没有题号的内容不是题（避免把考试介绍/答题须知当成题目）。
+  // 题目必有题号（如 4. 5.），按题号切分即可；切不到说明本大题无可识别题目。
   return questions;
 }
 

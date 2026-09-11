@@ -2,44 +2,36 @@
 <html>
 <head><meta charset="utf-8"><title>Test Parse</title></head>
 <body>
-<script src="js/data.js?v=20260912a"></script>
-<script src="js/learning.js?v=20260912a"></script>
-<script src="js/storage.js?v=20260912a"></script>
-<script src="js/app.js?v=20260912a"></script>
+<script src="js/data.js?v=20260912b"></script>
+<script src="js/learning.js?v=20260912b"></script>
+<script src="js/storage.js?v=20260912b"></script>
+<script src="js/app.js?v=20260912b"></script>
 <script>
-// 覆盖 init，避免 app.js 绑定 DOM 事件
 function init() {}
 window.addEventListener('DOMContentLoaded', () => {
-  // 综合样本：含无序号大题标题（"判断题..."）、选择题/填空题/判断题/简答题
+  // ★ 关键测试场景：前面有"考试介绍/答题须知"说明文字，只有 4、5 是真正的题
+  // 期望：只识别出 4、5 两道题，考试介绍不被当成题目
   const sampleText = `2023年某市中考生物试卷
+注意事项：
+1. 本试卷共8页，满分100分，考试时间60分钟。
+2. 答题前，考生务必将自己的姓名、准考证号填写在答题卡上。
+3. 请将答案填写在答题卡上，考试结束将试卷和答题卡一并交回。
+
 一、选择题（每小题2分，共20分）
-1. 下列属于植物细胞特有结构的是
+4. 下列属于植物细胞特有结构的是
 A. 细胞壁 B. 细胞膜 C. 细胞质 D. 细胞核
-2. 光合作用的主要场所是
+5. 光合作用的主要场所是
 A. 线粒体 B. 叶绿体 C. 液泡 D. 细胞核
 
 二、填空题（每空1分，共10分）
-1. 植物光合作用的原料是______和______。
-2. 呼吸作用的产物是______和______。
-
-判断题（每小题1分，共10分）
-1. 植物细胞具有细胞壁。
-2. 动物细胞含有叶绿体。
-
-三、简答题（共10分）
-1. 简述光合作用与呼吸作用的区别。
-2. 说明蒸腾作用对植物的意义。
+6. 植物光合作用的原料是______和______。
+7. 呼吸作用的产物是______和______。
 
 参考答案
 一、选择题
-1. A  2. B
+4. A  5. B
 二、填空题
-1. 二氧化碳、水  2. 二氧化碳和水
-判断题
-1. 正确  2. 错误
-三、简答题
-1. 光合作用制造有机物，呼吸作用分解有机物。
-2. 蒸腾作用能促进水分和无盐的运输。`;
+6. 二氧化碳、水  7. 二氧化碳和水`;
 
   const sections = parseExamSections(sampleText);
   const allQuestions = [];
@@ -48,7 +40,7 @@ A. 线粒体 B. 叶绿体 C. 液泡 D. 细胞核
     const qs = parseQuestionsInSection(secText, sec.type);
     qs.forEach(q => {
       extractAnswers(sampleText, [q], sec.type);
-      allQuestions.push({ type: sec.type, num: q.num, stem: q.stem.substring(0, 50), options: q.options, answer: q.answer });
+      allQuestions.push({ type: sec.type, num: q.num, stem: q.stem.substring(0, 40), options: q.options, answer: q.answer });
     });
   });
 
@@ -56,17 +48,13 @@ A. 线粒体 B. 叶绿体 C. 液泡 D. 细胞核
     sectionsFound: sections.length,
     sections: sections.map(s => ({ type: s.type, label: s.label })),
     questionsFound: allQuestions.length,
-    byType: sections.map(s => {
-      const qs = allQuestions.filter(q => q.type === s.type);
-      return { type: s.type, count: qs.length, sample: qs.slice(0, 2) };
-    }),
     questions: allQuestions
   };
   console.log('PARSE RESULT', out);
   document.body.innerHTML = '<pre id="result" style="white-space:pre-wrap;font-size:13px">' +
     '大题数: ' + out.sectionsFound + '\n' +
     out.sections.map(s => '  - ' + s.type + ' | ' + s.label).join('\n') + '\n\n' +
-    '小题数: ' + out.questionsFound + '\n' +
+    '小题数: ' + out.questionsFound + '（期望 4：选择4、5 + 填空6、7）\n' +
     JSON.stringify(out.questions, null, 2) +
     '</pre>';
 });

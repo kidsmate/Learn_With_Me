@@ -1,13 +1,13 @@
 // LearnWithMe - Service Worker (PWA 离线支持)
-const CACHE_NAME = 'learnwithme-v35';
+const CACHE_NAME = 'learnwithme-v36';
 const ASSETS = [
   './',
   './index.html',
-  './css/style.css?v=20260912a',
-  './js/data.js?v=20260912a',
-  './js/learning.js?v=20260912a',
-  './js/storage.js?v=20260912a',
-  './js/app.js?v=20260912a',
+  './css/style.css?v=20260912b',
+  './js/data.js?v=20260912b',
+  './js/learning.js?v=20260912b',
+  './js/storage.js?v=20260912b',
+  './js/app.js?v=20260912b',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
