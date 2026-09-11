@@ -13,6 +13,8 @@ const DEFAULT_DATA = {
   records: [],             // { type: 'learn'|'reward'|'punish'|'redeem'|'checkin', name, value, time }
   wishes: [],              // { id, name, icon, cost, granted }
   textbooks: [],           // { id, name, subject, size, uploadTime, chapters }
+  examPapers: [],          // { id, name, subject, year, region, size, uploadTime, hasPdf, questions: [] }
+  examQuestions: [],       // 从试卷提取的题目库 { id, paperId, subject, year, type, stem, options, answer, paperName, region }
   currentGrade: '七年级上', // 当前学习年级（七年级上/七年级下/八年级上/八年级下/九年级上/九年级下）
 };
 

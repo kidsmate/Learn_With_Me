@@ -139,6 +139,8 @@ function renderAll() {
   renderRewards();
   renderWishlist();
   renderTextbooks();
+  renderExamPapers();
+  renderExamQuestions();
   renderSettings();
 }
 
@@ -1731,6 +1733,295 @@ function renderTextbooks() {
     </div>
   `;
   }).join('');
+}
+
+// ============================================================
+// ============ 真题库：上传试卷 + 提取题目 + 题库渲染 ============
+// ============================================================
+// 数据结构：
+//   state.examPapers: [{ id, name, subject, year, region, size, uploadTime, hasPdf, questionCount }]
+//   state.examQuestions: [{ id, paperId, subject, year, region, paperName, type, stem, options, answer }]
+// 试卷 PDF 原始文件存 IndexedDB，key 用 'exam-' + paperId，与教材共用 STORE_NAME
+
+// ---- 题型识别表：关键词 → 题型名 ----
+const EXAM_QTYPE_MAP = [
+  { kw: /单项选择|选择题|单选|多项选择|多选/, type: '选择题' },
+  { kw: /填空/, type: '填空题' },
+  { kw: /判断/, type: '判断题' },
+  { kw: /作图|画图/, type: '作图题' },
+  { kw: /实验|探究/, type: '实验探究题' },
+  { kw: /计算|解答/, type: '解答题' },
+  { kw: /证明/, type: '证明题' },
+  { kw: /阅读理解|文言文阅读|现代文阅读|诗词?鉴赏|综合性学习/, type: '阅读理解题' },
+  { kw: /作文|写作/, type: '作文题' },
+  { kw: /附加题|选作题/, type: '附加题' },
+  { kw: /综合应用|综合题/, type: '综合题' },
+];
+
+// 中文数字转阿拉伯（用于"一、选择题" → 第1大题）
+function cn2num(s) {
+  const map = { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10 };
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return parseInt(s);
+  if (s === '十') return 10;
+  if (s.length === 2 && s[0] === '十') return 10 + (map[s[1]] || 0);
+  if (s.length === 2 && s[1] === '十') return (map[s[0]] || 0) * 10;
+  if (s.length === 3 && s[1] === '十') return (map[s[0]] || 0) * 10 + (map[s[2]] || 0);
+  return map[s[0]] || null;
+}
+
+// 从试卷文本中识别大题分段（返回 [{type, startIdx, endIdx}]）
+function parseExamSections(text) {
+  const secRe = /^[ \t]*[（(]?\s*([一二三四五六七八九十ⅡⅠⅢIVX]{1,4}|\d{1,2})\s*[)、.．）)]?\s*([^\n]{0,20})$/gm;
+  // ★ 答案区起点：含"参考答案""答案及解析"等 → 答案区不算题目，要截断
+  let ansStart = text.length;
+  const ansRe = /(?:参考答案及解析|参考答案|试题答案|答案及解析|答案[:：])/g;
+  let am;
+  while ((am = ansRe.exec(text)) !== null) {
+    if (am.index < ansStart) ansStart = am.index;
+  }
+  const sections = [];
+  let m;
+  while ((m = secRe.exec(text)) !== null) {
+    if (m.index >= ansStart) continue; // 答案区里的大题标题不算
+    const label = (m[2] || '').trim();
+    if (!label) continue;
+    let qtype = null;
+    for (const t of EXAM_QTYPE_MAP) {
+      if (t.kw.test(label)) { qtype = t.type; break; }
+    }
+    if (!qtype) continue;
+    sections.push({ type: qtype, startIdx: m.index, label, lineEnd: text.indexOf('\n', m.index) });
+  }
+  for (let i = 0; i < sections.length; i++) {
+    let end = (i + 1 < sections.length) ? sections[i + 1].startIdx : text.length;
+    if (end > ansStart) end = ansStart; // 不越过答案区
+    sections[i].endIdx = end;
+  }
+  return sections;
+}
+
+// 在一段大题文本内切分小题，返回 [{num, stem, options}]
+function parseQuestionsInSection(sectionText, qtype) {
+  const qStartRe = /^[ \t]*[（(]?(\d{1,3})[)、.．）]?/gm;
+  const positions = [];
+  let m;
+  while ((m = qStartRe.exec(sectionText)) !== null) {
+    const after = sectionText.substring(m.index + m[0].length, m.index + m[0].length + 3);
+    if (/^\d/.test(after) && !/^[（(]/.test(m[0])) continue;
+    positions.push({ num: parseInt(m[1]), start: m.index });
+  }
+  const questions = [];
+  for (let i = 0; i < positions.length; i++) {
+    const start = positions[i].start;
+    const end = (i + 1 < positions.length) ? positions[i + 1].start : sectionText.length;
+    let body = sectionText.substring(start, end).trim();
+    if (body.length < 4) continue;
+    body = body.replace(/^\s*[（(]?\d{1,3}[)、.．）]?\s*/, '');
+    const options = {};
+    if (qtype === '选择题') {
+      const optRe = /[（(]?\s*([A-Da-d])[）、.．）)]?\s*([^\n]{1,120}?)(?=[（(]?\s*[A-Da-d][）、.．）)]|$)/g;
+      let om;
+      while ((om = optRe.exec(body)) !== null) {
+        const k = om[1].toUpperCase();
+        const v = om[2].trim();
+        if (v && !options[k]) options[k] = v;
+      }
+      const aIdx = body.search(/[（(]?A[）、.．）)]/);
+      if (aIdx > 0) body = body.substring(0, aIdx).trim();
+    }
+    if (body.length > 500) body = body.substring(0, 500) + '…';
+    questions.push({ num: positions[i].num, stem: body, options: qtype === '选择题' ? options : null });
+  }
+  return questions;
+}
+
+// 尝试从试卷末尾/答案区提取答案
+function extractAnswers(text, questions, qtype) {
+  const ansStartRe = /(?:参考答案及解析|参考答案|试题答案|答案及解析|答案[:：])[\s\S]{20,}/;
+  const am = text.match(ansStartRe);
+  if (!am) return;
+  const ansText = am[0];
+  questions.forEach(q => {
+    const re = new RegExp('(?:^|[^\\d])' + q.num + '[、.．）)]\\s*[（(]?\\s*([A-Da-d])\\b', 'm');
+    const mm = ansText.match(re);
+    if (mm) q.answer = mm[1].toUpperCase();
+  });
+}
+
+// 从试卷名/首页文本识别学科、年份、地区
+function detectExamMeta(name, firstPageText) {
+  const text = name + ' ' + (firstPageText || '');
+  const subjMap = { '语文':'语文','数学':'数学','英语':'英语','物理':'物理','化学':'化学','历史':'历史','地理':'地理','生物':'生物','道德与法治|道法':'道德与法治','政治':'道德与法治','体育':'体育' };
+  let subject = '';
+  for (const k of Object.keys(subjMap)) {
+    const re = new RegExp(k);
+    if (re.test(text)) { subject = subjMap[k]; break; }
+  }
+  const ym = text.match(/(20\d{2})\s*年/);
+  const year = ym ? ym[1] : '';
+  // 地区：常见省市名（排除年份粘连，需在"年"之后或独立出现）
+  let region = '';
+  const rm = text.match(/(?:^|[^年卷])([\u4e00-\u9fa5]{2,6}(?:市|自治区|地区|州|县))/);
+  if (rm) region = rm[1].replace(/^年|^卷/, '');
+  return { subject, year, region };
+}
+
+// ---- 上传处理 ----
+let _examUploadData = null;
+async function handleExamPdfUpload(file) {
+  if (!file) return;
+  showToast('正在解析真题试卷…');
+  _examUploadData = { name: file.name, size: file.size, arrayBuffer: null, pageTexts: [], fullText: '' };
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    try {
+      const arrayBuffer = e.target.result;
+      _examUploadData.arrayBuffer = arrayBuffer;
+      const data = new Uint8Array(arrayBuffer.slice(0));
+      const pdf = await pdfjsLib.getDocument({ data, disableWorker: true }).promise;
+      const pageTexts = [];
+      let fullText = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const tc = await page.getTextContent();
+        const lines = [];
+        const yMap = {};
+        for (const item of tc.items) {
+          const y = Math.round(item.transform[5]);
+          let lk = y;
+          for (const k of Object.keys(yMap)) {
+            if (Math.abs(parseInt(k) - y) <= 3) { lk = parseInt(k); break; }
+          }
+          if (!yMap[lk]) yMap[lk] = [];
+          yMap[lk].push({ x: item.transform[4], str: item.str });
+        }
+        const ys = Object.keys(yMap).map(Number).sort((a, b) => b - a);
+        for (const y of ys) {
+          const line = yMap[y].sort((a, b) => a.x - b.x).map(it => it.str).join('').trim();
+          if (line) lines.push(line);
+        }
+        const pt = lines.join('\n');
+        pageTexts.push(pt);
+        fullText += pt + '\n\n';
+      }
+      _examUploadData.pageTexts = pageTexts;
+      _examUploadData.fullText = fullText;
+      const meta = detectExamMeta(file.name, pageTexts[0] || '');
+      const sections = parseExamSections(fullText);
+      const allQuestions = [];
+      const paperId = 'exam-' + Date.now();
+      sections.forEach(sec => {
+        const secText = fullText.substring(sec.startIdx, sec.endIdx);
+        const qs = parseQuestionsInSection(secText, sec.type);
+        qs.forEach(q => {
+          extractAnswers(fullText, [q], sec.type);
+          allQuestions.push({
+            id: paperId + '-q' + allQuestions.length,
+            paperId, subject: meta.subject, year: meta.year, region: meta.region,
+            paperName: file.name, type: sec.type,
+            stem: q.stem,
+            options: q.options ? Object.keys(q.options).sort().map(k => k + '. ' + q.options[k]) : null,
+            answer: q.answer || '',
+          });
+        });
+      });
+      const paper = {
+        id: paperId, name: file.name, subject: meta.subject, year: meta.year, region: meta.region,
+        size: file.size, uploadTime: Date.now(), hasPdf: true, questionCount: allQuestions.length,
+      };
+      state.examPapers.unshift(paper);
+      state.examQuestions = state.examQuestions.concat(allQuestions);
+      saveData(state);
+      renderExamPapers();
+      renderExamQuestions();
+      if (arrayBuffer) savePdfToDB(paperId, arrayBuffer, file.name).catch(err => console.warn('真题PDF保存失败', err));
+      showToast(`解析完成：识别 ${sections.length} 大题 / ${allQuestions.length} 道小题`);
+    } catch (err) {
+      console.error('真题解析失败:', err);
+      showToast('真题解析失败：' + (err.message || '未知错误'));
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// ---- 渲染试卷列表 ----
+function renderExamPapers() {
+  const list = document.getElementById('examPapersList');
+  if (!list) return;
+  if (!state.examPapers.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📝</div>还没有上传真题卷，上传后自动提取题目进入题库</div>';
+    return;
+  }
+  list.innerHTML = state.examPapers.map(p => `
+    <div class="textbook-item">
+      <div class="textbook-icon">📄</div>
+      <div class="textbook-info">
+        <div class="textbook-name">${escapeHtml(p.name)}</div>
+        <div class="textbook-meta">${p.subject || '未识别'} ${p.year ? '· ' + p.year + '年' : ''} ${p.region ? '· ' + p.region : ''} · ${p.questionCount} 题 · ${formatSize(p.size)} · ${formatTime(p.uploadTime)}</div>
+      </div>
+      <button class="textbook-action text-danger" onclick="deleteExamPaper('${p.id}')">删除</button>
+    </div>
+  `).join('');
+}
+
+// ---- 渲染题库（带筛选）----
+function renderExamQuestions() {
+  const list = document.getElementById('examQuestionsList');
+  if (!list) return;
+  const subjSel = document.getElementById('examFilterSubject');
+  if (subjSel) {
+    const subs = Array.from(new Set(state.examPapers.map(p => p.subject).filter(Boolean)));
+    const cur = subjSel.value;
+    subjSel.innerHTML = '<option value="">全部学科</option>' + subs.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    subjSel.value = cur;
+  }
+  const typeSel = document.getElementById('examFilterType');
+  if (typeSel) {
+    const types = Array.from(new Set(state.examQuestions.map(q => q.type).filter(Boolean)));
+    const cur2 = typeSel.value;
+    typeSel.innerHTML = '<option value="">全部题型</option>' + types.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+    typeSel.value = cur2;
+  }
+  const fSubj = subjSel ? subjSel.value : '';
+  const fType = typeSel ? typeSel.value : '';
+  const kw = (document.getElementById('examFilterKw') || {}).value || '';
+  let qs = state.examQuestions.filter(q => {
+    if (fSubj && q.subject !== fSubj) return false;
+    if (fType && q.type !== fType) return false;
+    if (kw && !(q.stem || '').includes(kw)) return false;
+    return true;
+  });
+  if (!qs.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">🗂️</div>题库为空，上传真题卷后会自动提取题目到此处</div>';
+    return;
+  }
+  list.innerHTML = qs.map((q, i) => `
+    <div class="exam-question-item">
+      <div class="exam-q-head">
+        <span class="exam-q-type">${escapeHtml(q.type || '未分类')}</span>
+        <span class="exam-q-source">${escapeHtml(q.subject || '')} ${q.year ? q.year + '年' : ''} ${q.region ? escapeHtml(q.region) : ''}</span>
+        <span class="exam-q-paper" title="${escapeHtml(q.paperName)}">📄 ${escapeHtml(q.paperName)}</span>
+      </div>
+      <div class="exam-q-stem">${i + 1}. ${escapeHtml(q.stem)}</div>
+      ${q.options ? `<div class="exam-q-options">${q.options.map(o => `<div>${escapeHtml(o)}</div>`).join('')}</div>` : ''}
+      ${q.answer ? `<div class="exam-q-answer">参考答案：<b>${escapeHtml(q.answer)}</b></div>` : '<div class="exam-q-answer empty">暂无参考答案</div>'}
+    </div>
+  `).join('');
+}
+
+// ---- 删除试卷（连带题目）----
+function deleteExamPaper(id) {
+  showConfirm('确定删除该真题卷及其题目吗？', () => {
+    state.examPapers = state.examPapers.filter(p => p.id !== id);
+    state.examQuestions = state.examQuestions.filter(q => q.paperId !== id);
+    saveData(state);
+    renderExamPapers();
+    renderExamQuestions();
+    deletePdfFromDB(id).catch(() => {});
+    if (_pdfDocCache[id]) { try { _pdfDocCache[id].destroy(); } catch(e){} delete _pdfDocCache[id]; }
+    showToast('真题卷已删除');
+  });
 }
 
 // 自定义确认弹窗（替代原生 confirm，移动端友好）
@@ -4378,6 +4669,33 @@ function setupEventListeners() {
     if (file && file.type === 'application/pdf') handlePdfUpload(file);
     else showToast('请上传 PDF 文件');
   });
+
+  // ★ 真题试卷上传
+  const examZone = document.getElementById('examUploadZone');
+  const examInput = document.getElementById('examPdfInput');
+  if (examZone && examInput) {
+    examZone.addEventListener('click', (e) => {
+      if (e.target.tagName !== 'BUTTON') examInput.click();
+    });
+    examInput.addEventListener('change', (e) => {
+      if (e.target.files[0]) handleExamPdfUpload(e.target.files[0]);
+      e.target.value = '';
+    });
+    examZone.addEventListener('dragover', (e) => { e.preventDefault(); examZone.classList.add('drag'); });
+    examZone.addEventListener('dragleave', () => examZone.classList.remove('drag'));
+    examZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      examZone.classList.remove('drag');
+      const file = e.dataTransfer.files[0];
+      if (file && file.type === 'application/pdf') handleExamPdfUpload(file);
+      else showToast('请上传 PDF 文件');
+    });
+    // 筛选器
+    document.getElementById('examFilterSubject').addEventListener('change', renderExamQuestions);
+    document.getElementById('examFilterType').addEventListener('change', renderExamQuestions);
+    const kwInput = document.getElementById('examFilterKw');
+    kwInput.addEventListener('input', renderExamQuestions);
+  }
 
   // 设置
   document.getElementById('settingNickname').addEventListener('change', saveSettings);

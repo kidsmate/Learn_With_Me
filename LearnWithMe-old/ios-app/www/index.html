@@ -222,6 +222,39 @@
         </div>
       </section>
 
+      <!-- ===== Exam Papers Page ===== -->
+      <section class="page" id="page-exams">
+        <div class="page-header">
+          <h1>真题库</h1>
+          <div class="page-sub">上传各科中考真题试卷，自动提取题目，组建真题库</div>
+        </div>
+
+        <div class="upload-zone" id="examUploadZone">
+          <div class="upload-icon">📝</div>
+          <div class="upload-text">点击或拖拽上传真题试卷 PDF</div>
+          <div class="upload-hint">支持语文/数学/英语/物理/化学等各科中考真题</div>
+          <input type="file" id="examPdfInput" accept="application/pdf" hidden>
+          <button class="btn-primary" onclick="document.getElementById('examPdfInput').click()">选择文件</button>
+        </div>
+
+        <div class="section-title">我的真题卷</div>
+        <div class="textbooks-list" id="examPapersList"></div>
+
+        <div class="exam-filter-bar" id="examFilterBar">
+          <span class="exam-filter-title">🗂️ 题库筛选</span>
+          <select class="exam-filter-select" id="examFilterSubject">
+            <option value="">全部学科</option>
+          </select>
+          <select class="exam-filter-select" id="examFilterType">
+            <option value="">全部题型</option>
+          </select>
+          <input type="text" class="exam-filter-input" id="examFilterKw" placeholder="搜索题目关键词…">
+        </div>
+
+        <div class="section-title">真题库</div>
+        <div class="exam-questions-list" id="examQuestionsList"></div>
+      </section>
+
       <!-- ===== Settings Page ===== -->
       <section class="page" id="page-settings">
         <div class="page-header">
@@ -287,6 +320,10 @@
       <button class="tab-item" data-page="textbooks">
         <div class="tab-icon">📚</div>
         <div class="tab-label">教材</div>
+      </button>
+      <button class="tab-item" data-page="exams">
+        <div class="tab-icon">📝</div>
+        <div class="tab-label">真题</div>
       </button>
       <button class="tab-item" data-page="rewards">
         <div class="tab-icon">🎁</div>
